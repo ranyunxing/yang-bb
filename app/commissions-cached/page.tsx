@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type MouseEvent as ReactMouseEvent } from 'react'
 import { CommissionSummary, NetworkConfig, NetworkAccount, UnifiedCommission } from '@/types'
 import CommissionReport from '@/components/CommissionReport'
 import CommissionChartToggle from '@/components/CommissionChartToggle'
@@ -193,7 +193,11 @@ export default function CommissionsCachedPage() {
   }
 
   // 查询数据（从数据库）
-  const handleQuery = async (targetPage: number = currentPage) => {
+  const handleQuery = async (
+    arg: number | ReactMouseEvent<HTMLButtonElement> | undefined = undefined
+  ) => {
+    const targetPage = typeof arg === 'number' ? arg : currentPage
+
     if (!beginDate || !endDate) {
       setError('请选择日期范围')
       return
