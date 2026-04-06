@@ -37,10 +37,10 @@ export default function Navigation() {
             业绩监控
           </Link>
           <Link 
-            href="/merchants" 
-            className={pathname === '/merchants' ? styles.active : ''}
+            href="/commissions-cached" 
+            className={pathname === '/commissions-cached' ? styles.active : ''}
           >
-            广告商管理
+            业绩明细（缓存）
           </Link>
           <button
             onClick={handleLogout}

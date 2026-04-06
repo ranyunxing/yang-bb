@@ -57,6 +57,24 @@ export async function POST(request: NextRequest) {
       })
     }
 
+    const toMillis = (timestampSecondsOrMillis: number) => {
+      // 统一存毫秒；如果看起来像秒（< 2001-09-09 的毫秒量级阈值），则乘 1000
+      if (!Number.isFinite(timestampSecondsOrMillis) || timestampSecondsOrMillis <= 0) return 0
+      return timestampSecondsOrMillis < 1_000_000_000_000 ? timestampSecondsOrMillis * 1000 : timestampSecondsOrMillis
+    }
+
+    const buildSourceTransactionId = (item: UnifiedCommission) => {
+      const raw = (item as any).id
+      if (typeof raw === 'string' && raw.trim() !== '') return raw.trim()
+      // 兜底：生成尽量稳定的“明细级”标识，避免 order_id 不唯一导致冲突
+      const orderId = item.orderId || 'no-order'
+      const orderTime = item.orderTime || 0
+      const merchantName = item.merchantName || 'no-merchant'
+      const saleAmount = item.saleAmount ?? 0
+      const commission = item.commission ?? 0
+      return `${item.networkType}:${item.accountId}:${orderId}:${orderTime}:${merchantName}:${saleAmount}:${commission}`
+    }
+
     // 2. 全量替换策略：先删除所有数据，再插入新数据
     console.log('🗑️  开始删除旧数据...')
     
@@ -86,23 +104,51 @@ export async function POST(request: NextRequest) {
     console.log('💾 开始插入新数据...')
     
     // 转换数据格式（UnifiedCommission -> 数据库格式）
-    const dbRecords = commissions.map((item: UnifiedCommission) => ({
-      network_id: item.networkId,
-      account_id: item.accountId,
-      order_id: item.orderId || null,
-      order_time: item.orderTime || 0,
-      merchant_name: item.merchantName || null,
-      sale_amount: item.saleAmount || 0,
-      commission: item.commission || 0,
-      status: item.status || null,
-      currency: item.currency || 'USD',
-      customer_country: item.customerCountry || null,
-      brand_id: item.brandId || null,
-      mcid: item.mcid || null,
-      paid_status: item.paidStatus ?? null,
-      network_type: item.networkType || null,
-      original_data: item.originalData || null,
-    }))
+    const dbRecordsRaw = commissions.map((item: UnifiedCommission) => {
+      // 确保 original_data 是有效 JSON 对象或 null
+      let originalData: any = null
+      if (item.originalData) {
+        try {
+          originalData = typeof item.originalData === 'string'
+            ? JSON.parse(item.originalData)
+            : item.originalData
+        } catch (e) {
+          console.warn(`⚠️  原始数据格式错误，跳过 original_data: ${e}`)
+          originalData = null
+        }
+      }
+
+      return {
+        network_id: item.networkId,
+        account_id: item.accountId,
+        order_id: item.orderId || null,
+        // cached 查询使用 JS Date.getTime()（毫秒），所以这里也统一用毫秒
+        order_time: toMillis(item.orderTime || 0),
+        merchant_name: item.merchantName || null,
+        sale_amount: item.saleAmount || 0,
+        commission: item.commission || 0,
+        status: item.status || null,
+        currency: item.currency || 'USD',
+        customer_country: item.customerCountry || null,
+        brand_id: item.brandId || null,
+        mcid: item.mcid || null,
+        paid_status: item.paidStatus ?? null,
+        network_type: item.networkType || null,
+        // 明细级唯一标识：用于避免 order_id 不唯一导致整批插入失败
+        source_transaction_id: buildSourceTransactionId(item),
+        original_data: originalData,
+      }
+    })
+
+    // 批内去重：避免同一批数据出现重复 source_transaction_id 触发唯一约束
+    const seenSourceIds = new Set<string>()
+    const dbRecords = dbRecordsRaw.filter((r: any) => {
+      const key = String(r.source_transaction_id || '').trim()
+      if (!key) return true
+      if (seenSourceIds.has(key)) return false
+      seenSourceIds.add(key)
+      return true
+    })
 
     // 批量插入（每次 1000 条）
     const batchSize = 1000
@@ -119,7 +165,7 @@ export async function POST(request: NextRequest) {
 
       if (insertError) {
         console.error(`❌ 批次 ${Math.floor(i / batchSize) + 1} 插入失败:`, insertError)
-        errors.push(`批次 ${Math.floor(i / batchSize) + 1} 插入失败: ${insertError.message}`)
+        errors.push(`批次 ${Math.floor(i / batchSize) + 1} 插入失败: ${insertError.message || JSON.stringify(insertError)}`)
       } else {
         insertedCount += batch.length
         console.log(`✅ 批次 ${Math.floor(i / batchSize) + 1} 插入成功`)

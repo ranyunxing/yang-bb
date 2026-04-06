@@ -20,15 +20,22 @@ CREATE TABLE IF NOT EXISTS commissions_cache (
   mcid VARCHAR(100),                                       -- MCID
   paid_status INTEGER,                                     -- 支付状态：0=未支付，1=已支付
   network_type VARCHAR(50),                                -- 联盟类型（partnermatic/linkbux/linkhaitao）
+  source_transaction_id TEXT,                              -- 明细级唯一标识（联盟返回的 transaction id / sign_id / linkbux_id 等）
   original_data JSONB,                                     -- 原始数据（JSON格式，保留所有字段）
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),       -- 创建时间
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()        -- 更新时间
 );
 
 -- 2. 创建唯一约束（用于去重）
--- 使用 (network_id, account_id, order_id) 作为唯一标识
+-- 注意：order_id 在很多联盟并不唯一（一个订单可能对应多条明细），所以不能作为唯一键
+-- 使用 (network_id, account_id, source_transaction_id) 作为唯一标识
 CREATE UNIQUE INDEX IF NOT EXISTS idx_commissions_cache_unique 
-ON commissions_cache(network_id, account_id, order_id) 
+ON commissions_cache(network_id, account_id, source_transaction_id) 
+WHERE source_transaction_id IS NOT NULL;
+
+-- order_id 仅用于查询/筛选，不做唯一约束
+CREATE INDEX IF NOT EXISTS idx_commissions_cache_order_id
+ON commissions_cache(order_id)
 WHERE order_id IS NOT NULL;
 
 -- 3. 创建索引（用于快速查询）
@@ -93,6 +100,7 @@ SELECT
   nc.type AS network_type,
   c.account_id,
   na.account_name,
+  c.source_transaction_id,
   c.order_id,
   c.order_time,
   c.merchant_name,
@@ -134,6 +142,8 @@ ORDER BY indexname;
 -- 1. 执行此脚本创建佣金数据缓存表
 -- 2. 表结构设计支持全量替换策略（DELETE + INSERT）
 -- 3. 索引优化了常用查询字段（mcid, brand_id, merchant_name, order_time）
--- 4. 唯一约束 (network_id, account_id, order_id) 用于去重
+-- 4. 唯一约束 (network_id, account_id, source_transaction_id) 用于明细级去重（避免 order_id 不唯一导致插入失败）
+-- 5. 若你的线上库曾使用 (network_id, account_id, order_id) 作为唯一键，请执行迁移脚本：
+--    supabase/migrate_commissions_cache_detail_unique.sql
 -- ============================================
 
