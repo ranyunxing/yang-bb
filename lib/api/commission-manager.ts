@@ -111,7 +111,8 @@ function getNetworkMaxConcurrent(networkType: NetworkType): number {
     case 'partnermatic':
       return 3
     case 'linkhaitao':
-      return 3
+      // Linkhaitao API 限制：2/5s，必须把并发压到 1，并配合批次延迟
+      return 1
     case 'linkbux':
       return 3 // TODO: 根据实际 API 限制调整
     default:
@@ -353,7 +354,8 @@ export async function getCommissions(
       
       // 提取任务函数数组用于执行
       const taskFunctions = networkTasks.map(item => item.task)
-      const linkhaitaoBatchDelay = network.type === 'linkhaitao' ? 2000 : undefined
+      // Linkhaitao API 限制：2/5s，单任务批次之间延迟 3s，确保稳定不触发限流
+      const linkhaitaoBatchDelay = network.type === 'linkhaitao' ? 3000 : undefined
       const networkResults = await batchExecute(taskFunctions, maxConcurrent, {
         batchDelayMs: linkhaitaoBatchDelay,
         networkName: network.name

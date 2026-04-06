@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { CommissionSummary, NetworkConfig, NetworkAccount } from '@/types'
+import { CommissionSummary, NetworkConfig, NetworkAccount, UnifiedCommission } from '@/types'
 import CommissionReport from '@/components/CommissionReport'
 import CommissionChartToggle from '@/components/CommissionChartToggle'
 import DebugPanel from '@/components/DebugPanel'
@@ -35,6 +35,11 @@ export default function CommissionsCachedPage() {
   const [warningMessage, setWarningMessage] = useState('')
   const [syncMessage, setSyncMessage] = useState('')
   const [isChartsVisible, setIsChartsVisible] = useState(false)
+
+  // 兜底排序：不同联盟/账号数据混在一起时，也能按时间统一倒序展示
+  function sortByOrderTimeDesc(rows: UnifiedCommission[]) {
+    return [...rows].sort((a, b) => (Number(b.orderTime) || 0) - (Number(a.orderTime) || 0))
+  }
 
   // 加载联盟列表和账号列表
   useEffect(() => {
@@ -127,6 +132,7 @@ export default function CommissionsCachedPage() {
     setError('')
     setSyncMessage('')
     setSuccessMessage('')
+    setWarningMessage('')
 
     try {
       const response = await fetch('/api/commissions/sync', {
@@ -148,18 +154,35 @@ export default function CommissionsCachedPage() {
       }
 
       const result = await response.json()
+      const apiErrors: string[] = result.apiErrors || []
+      const apiWarnings: string[] = result.apiWarnings || []
+      const dbErrors: string[] = result.errors || []
+
       if (result.success) {
         setSyncMessage(result.message || `同步成功：插入了 ${result.inserted} 条数据`)
+        if (apiWarnings.length > 0) {
+          setWarningMessage(`同步警告：${apiWarnings.length} 条（不影响写库，但可能存在缺失风险）`)
+        }
         setSuccessMessage('数据同步成功，现在可以查询了')
-        // 同步成功后自动查询一次
+        // 同步成功后自动查询一次（回到第一页）
         setTimeout(() => {
-          handleQuery()
+          handleQuery(1)
         }, 500)
       } else {
-        setError(result.message || '同步失败')
-        if (result.errors) {
-          console.error('同步错误:', result.errors)
-        }
+        // 部分成功/失败：必须明确告诉用户“数据可能不完整”
+        setWarningMessage('本次同步存在错误：数据库中的数据可能不完整，请查看错误详情后重试。')
+        setSyncMessage(result.message || `部分成功：已插入 ${result.inserted || 0} 条数据`)
+
+        const details = [
+          ...(apiErrors.length > 0 ? [`API 错误（${apiErrors.length}）：${apiErrors.slice(0, 3).join('；')}${apiErrors.length > 3 ? '…' : ''}`] : []),
+          ...(dbErrors.length > 0 ? [`写库错误（${dbErrors.length}）：${dbErrors.slice(0, 3).join('；')}${dbErrors.length > 3 ? '…' : ''}`] : []),
+        ]
+        if (details.length > 0) setError(details.join('\n'))
+
+        // 仍然允许查询已写入的数据（回到第一页）
+        setTimeout(() => {
+          handleQuery(1)
+        }, 500)
       }
     } catch (err: any) {
       console.error('同步失败:', err)
@@ -170,7 +193,7 @@ export default function CommissionsCachedPage() {
   }
 
   // 查询数据（从数据库）
-  const handleQuery = async () => {
+  const handleQuery = async (targetPage: number = currentPage) => {
     if (!beginDate || !endDate) {
       setError('请选择日期范围')
       return
@@ -192,7 +215,7 @@ export default function CommissionsCachedPage() {
           accountIds: selectedAccountIds.length > 0 ? selectedAccountIds : undefined,
           beginDate,
           endDate,
-          curPage: currentPage,
+          curPage: targetPage,
           perPage: pageSize,
           merchantName: filterMerchantName || undefined,
           mcid: filterMcid || undefined,
@@ -207,14 +230,14 @@ export default function CommissionsCachedPage() {
         throw new Error(errorData.error || '查询失败')
       }
 
-      const result = await response.json()
-      setData(result)
-      setSuccessMessage(`查询成功，共 ${result.total} 条数据`)
-      
-      // 重置到第一页
-      if (currentPage !== 1) {
-        setCurrentPage(1)
+      const result = (await response.json()) as CommissionSummary
+      // 兜底排序：避免因为历史数据单位/混合导致显示顺序“看起来很乱”
+      const normalized: CommissionSummary = {
+        ...result,
+        data: Array.isArray(result.data) ? sortByOrderTimeDesc(result.data) : [],
       }
+      setData(normalized)
+      setSuccessMessage(`查询成功，共 ${result.total} 条数据`)
     } catch (err: any) {
       console.error('查询失败:', err)
       setError(err.message || '查询失败')
@@ -229,7 +252,8 @@ export default function CommissionsCachedPage() {
     if (data && (filterMerchantName || filterMcid || filterBrandId || filterStatus !== '全部' || filterPaidStatus !== '全部')) {
       // 使用防抖，避免频繁请求
       const timer = setTimeout(() => {
-        handleQuery()
+        setCurrentPage(1)
+        handleQuery(1)
       }, 300)
       return () => clearTimeout(timer)
     }
@@ -239,7 +263,7 @@ export default function CommissionsCachedPage() {
   const handlePageChange = (newPage: number) => {
     if (newPage >= 1 && newPage <= (data?.totalPage || 1)) {
       setCurrentPage(newPage)
-      handleQuery()
+      handleQuery(newPage)
     }
   }
 
@@ -247,7 +271,7 @@ export default function CommissionsCachedPage() {
   const filteredStats = data ? {
     totalAmount: data.summary?.totalAmount || 0,
     totalCommission: data.summary?.totalCommission || 0,
-    statusCounts: data.data.reduce((acc, item) => {
+    statusCounts: data.data.reduce((acc: Record<string, number>, item: UnifiedCommission) => {
       const status = item.status || 'Unknown'
       acc[status] = (acc[status] || 0) + 1
       return acc
@@ -447,6 +471,8 @@ export default function CommissionsCachedPage() {
           <table className={styles.table}>
             <thead>
               <tr>
+                <th>联盟</th>
+                <th>账号</th>
                 <th>商家名称</th>
                 <th>品牌ID</th>
                 <th>MCID</th>
@@ -460,11 +486,13 @@ export default function CommissionsCachedPage() {
             <tbody>
               {data.data.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className={styles.noData}>没有数据</td>
+                  <td colSpan={10} className={styles.noData}>没有数据</td>
                 </tr>
               ) : (
-                data.data.map((item) => (
+                data.data.map((item: UnifiedCommission) => (
                   <tr key={item.id}>
+                    <td>{(item as any).networkName || '-'}</td>
+                    <td>{(item as any).accountName || '-'}</td>
                     <td>{item.merchantName || '-'}</td>
                     <td>{item.brandId || '-'}</td>
                     <td>{item.mcid || '-'}</td>

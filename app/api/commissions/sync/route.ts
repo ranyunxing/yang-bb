@@ -44,16 +44,21 @@ export async function POST(request: NextRequest) {
       paidStatus: undefined,
     })
 
+    const apiErrors = (result as any)?.meta?.errors || []
+    const apiWarnings = (result as any)?.meta?.warnings || []
+
     const commissions = result.data || []
     console.log(`✅ API 获取成功，共 ${commissions.length} 条数据`)
 
     if (commissions.length === 0) {
       return NextResponse.json({
-        success: true,
-        message: '没有数据需要同步',
+        success: apiErrors.length === 0,
+        message: apiErrors.length === 0 ? '没有数据需要同步' : 'API 有错误，本次未获取到任何数据',
         total: 0,
         inserted: 0,
         deleted: 0,
+        apiErrors: apiErrors.length > 0 ? apiErrors : undefined,
+        apiWarnings: apiWarnings.length > 0 ? apiWarnings : undefined,
       })
     }
 
@@ -179,15 +184,22 @@ export async function POST(request: NextRequest) {
 
     console.log(`✅ 数据同步完成，共插入 ${insertedCount} 条，数据库中现有 ${count || 0} 条`)
 
+    const success = apiErrors.length === 0 && errors.length === 0
+    const partialReasons: string[] = []
+    if (apiErrors.length > 0) partialReasons.push(`API 调用失败 ${apiErrors.length} 次`)
+    if (errors.length > 0) partialReasons.push(`写库失败 ${errors.length} 个批次`)
+
     return NextResponse.json({
-      success: errors.length === 0,
-      message: errors.length === 0 
+      success,
+      message: success
         ? `同步成功：插入 ${insertedCount} 条数据`
-        : `部分成功：插入 ${insertedCount} 条数据，但有 ${errors.length} 个批次失败`,
+        : `部分成功：插入 ${insertedCount} 条数据（${partialReasons.join('，')}）`,
       total: commissions.length,
       inserted: insertedCount,
       deleted: count || 0,
       errors: errors.length > 0 ? errors : undefined,
+      apiErrors: apiErrors.length > 0 ? apiErrors : undefined,
+      apiWarnings: apiWarnings.length > 0 ? apiWarnings : undefined,
     })
   } catch (error: any) {
     console.error('❌ 同步佣金数据失败:', error)
