@@ -12,6 +12,8 @@ export const dynamic = 'force-dynamic'
 export async function POST(request: NextRequest) {
   try {
     const params: CommissionQueryParams = await request.json()
+    const skipCount = Boolean((params as any).skipCount)
+    const knownTotal = Number((params as any).knownTotal)
     const {
       networkIds = [],
       accountIds = [],
@@ -47,52 +49,59 @@ export async function POST(request: NextRequest) {
       mcid,
       status,
       paidStatus,
+      skipCount,
+      knownTotal: Number.isFinite(knownTotal) ? knownTotal : undefined,
     })
 
     // 1. 时间范围筛选
     const beginTimestamp = new Date(beginDate).getTime()
     const endTimestamp = new Date(endDate).getTime() + 24 * 60 * 60 * 1000 - 1 // 包含结束日期当天
 
-    // 2. 构建 count 查询（用于获取总数）
-    let countQuery: any = supabaseServer
-      .from('commissions_cache_view')
-      .select('*', { count: 'exact', head: true })
-      .gte('order_time', beginTimestamp)
-      .lte('order_time', endTimestamp)
+    let total = 0
+    let totalPages = 0
 
-    // 应用所有筛选条件到 count 查询
-    if (networkIds && networkIds.length > 0) {
-      countQuery = countQuery.in('network_id', networkIds)
-    }
-    if (accountIds && accountIds.length > 0) {
-      countQuery = countQuery.in('account_id', accountIds)
-    }
-    if (merchantName) {
-      countQuery = countQuery.ilike('merchant_name', `%${merchantName}%`)
-    }
-    if (mcid) {
-      countQuery = countQuery.eq('mcid', mcid)
-    }
-    if (brandId) {
-      countQuery = countQuery.eq('brand_id', brandId)
-    }
-    if (status && status !== '全部') {
-      countQuery = countQuery.eq('status', status)
-    }
-    if (paidStatus && paidStatus !== '全部') {
-      const paidStatusNum = paidStatus === '已支付' ? 1 : 0
-      countQuery = countQuery.eq('paid_status', paidStatusNum)
-    }
+    // 2. 获取总数（用于分页）
+    // 性能优化：翻页时可由前端传 knownTotal 并设置 skipCount=true，避免每次都 count(*)
+    if (skipCount && Number.isFinite(knownTotal) && knownTotal >= 0) {
+      total = knownTotal
+      totalPages = Math.ceil(total / perPage)
+    } else {
+      let countQuery: any = supabaseServer
+        .from('commissions_cache_view')
+        .select('*', { count: 'exact', head: true })
+        .gte('order_time', beginTimestamp)
+        .lte('order_time', endTimestamp)
 
-    // 3. 获取总数（用于分页）
-    const { count, error: countError } = await countQuery
+      // 应用所有筛选条件到 count 查询
+      if (networkIds && networkIds.length > 0) {
+        countQuery = countQuery.in('network_id', networkIds)
+      }
+      if (accountIds && accountIds.length > 0) {
+        countQuery = countQuery.in('account_id', accountIds)
+      }
+      if (merchantName) {
+        countQuery = countQuery.ilike('merchant_name', `%${merchantName}%`)
+      }
+      if (mcid) {
+        countQuery = countQuery.eq('mcid', mcid)
+      }
+      if (brandId) {
+        countQuery = countQuery.eq('brand_id', brandId)
+      }
+      if (status && status !== '全部') {
+        countQuery = countQuery.eq('status', status)
+      }
+      if (paidStatus && paidStatus !== '全部') {
+        const paidStatusNum = paidStatus === '已支付' ? 1 : 0
+        countQuery = countQuery.eq('paid_status', paidStatusNum)
+      }
 
-    if (countError) {
-      throw countError
+      const { count, error: countError } = await countQuery
+      if (countError) throw countError
+
+      total = count || 0
+      totalPages = Math.ceil(total / perPage)
     }
-
-    const total = count || 0
-    const totalPages = Math.ceil(total / perPage)
 
     // 12. 重新构建查询并分页
     let pagedQuery = supabaseServer
@@ -137,7 +146,9 @@ export async function POST(request: NextRequest) {
       throw error
     }
 
-    console.log(`✅ 查询成功：找到 ${total} 条数据，返回第 ${curPage} 页（${data?.length || 0} 条）`)
+    console.log(`✅ 查询成功：找到 ${total} 条数据，返回第 ${curPage} 页（${data?.length || 0} 条）`, {
+      countStrategy: skipCount ? 'skipCount' : 'count',
+    })
 
     // 14. 转换数据格式（数据库格式 -> UnifiedCommission）
     const commissions = (data || []).map((item: any) => ({
