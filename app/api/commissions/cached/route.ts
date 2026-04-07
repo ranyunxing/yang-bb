@@ -248,6 +248,9 @@ export async function POST(request: NextRequest) {
 
         const byMerchantName: Record<string, { Pending: number; Rejected: number; Approved: number; mcid?: string }> = {}
         const byMcid: Record<string, { Pending: number; Rejected: number; Approved: number; merchantName?: string }> = {}
+        type MerchantStatusKey = 'Pending' | 'Rejected' | 'Approved'
+        const isMerchantStatusKey = (v: any): v is MerchantStatusKey =>
+          v === 'Pending' || v === 'Rejected' || v === 'Approved'
 
         ;(baseAggData || []).forEach((row: any) => {
           const mName = row.merchant_name || 'Unknown'
@@ -257,7 +260,7 @@ export async function POST(request: NextRequest) {
           if (!byMerchantName[mName]) byMerchantName[mName] = { Pending: 0, Rejected: 0, Approved: 0, mcid: mMcid || undefined }
           if (mMcid && !byMcid[mMcid]) byMcid[mMcid] = { Pending: 0, Rejected: 0, Approved: 0, merchantName: mName }
 
-          if (st === 'Pending' || st === 'Rejected' || st === 'Approved') {
+          if (isMerchantStatusKey(st)) {
             byMerchantName[mName][st] = (byMerchantName[mName][st] || 0) + 1
             if (mMcid) byMcid[mMcid][st] = (byMcid[mMcid][st] || 0) + 1
           }
