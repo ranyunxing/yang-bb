@@ -77,8 +77,16 @@ export async function POST(request: NextRequest) {
     // 2. 全量替换策略：先删除所有数据，再插入新数据
     console.log('🗑️  开始删除旧数据...')
     
-    // 如果有筛选条件，只删除对应的数据；否则删除所有数据
-    let deleteQuery: any = supabaseServer.from('commissions_cache').delete()
+    // Supabase/PostgREST 安全限制：DELETE 必须带 WHERE
+    // 同步范围固定为 2025-08-01 → 今天，因此按时间范围删除，再叠加 network/account 条件
+    const beginTimestamp = new Date(`${fixedBeginDate}T00:00:00`).getTime()
+    const endTimestamp = new Date(`${fixedEndDate}T23:59:59.999`).getTime()
+
+    let deleteQuery: any = supabaseServer
+      .from('commissions_cache')
+      .delete()
+      .gte('order_time', beginTimestamp)
+      .lte('order_time', endTimestamp)
     
     if (networkIds && networkIds.length > 0) {
       deleteQuery = deleteQuery.in('network_id', networkIds)
@@ -86,10 +94,7 @@ export async function POST(request: NextRequest) {
     if (accountIds && accountIds.length > 0) {
       deleteQuery = deleteQuery.in('account_id', accountIds)
     }
-    
-    // 如果指定了日期范围，也按日期删除（可选）
-    // 注意：全量替换通常是删除所有数据，但如果只同步部分数据，可以只删除对应范围的数据
-    
+
     const { error: deleteError } = await deleteQuery
 
     if (deleteError) {
