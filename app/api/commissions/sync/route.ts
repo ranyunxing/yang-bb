@@ -12,30 +12,24 @@ export const dynamic = 'force-dynamic'
  */
 export async function POST(request: NextRequest) {
   try {
+    const fixedBeginDate = '2025-08-01'
+    const today = new Date()
+    const fixedEndDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+
     const params = await request.json()
     const { 
       networkIds = [], 
       accountIds = [],
-      beginDate,
-      endDate 
     } = params
 
-    // 验证必需参数
-    if (!beginDate || !endDate) {
-      return NextResponse.json(
-        { error: '缺少必需参数: beginDate, endDate' },
-        { status: 400 }
-      )
-    }
-
-    console.log('🔄 开始同步佣金数据...', { beginDate, endDate, networkIds, accountIds })
+    console.log('🔄 开始同步佣金数据...', { beginDate: fixedBeginDate, endDate: fixedEndDate, networkIds, accountIds, mode: 'fixed-range' })
 
     // 1. 获取所有佣金数据（复用现有逻辑）
     const result = await getCommissions({
       networkIds: networkIds.length > 0 ? networkIds : undefined,
       accountIds: accountIds.length > 0 ? accountIds : undefined,
-      beginDate,
-      endDate,
+      beginDate: fixedBeginDate,
+      endDate: fixedEndDate,
       curPage: 1,
       perPage: 2000, // 获取所有数据
       merchantName: undefined,

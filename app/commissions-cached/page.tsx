@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, type MouseEvent as ReactMouseEvent, type ChangeEvent } from 'react'
+import { useState, useEffect, type MouseEvent as ReactMouseEvent, type ChangeEvent, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { CommissionSummary, NetworkConfig, NetworkAccount, UnifiedCommission } from '@/types'
 import CommissionReport from '@/components/CommissionReport'
 import CommissionChartToggle from '@/components/CommissionChartToggle'
@@ -35,6 +36,10 @@ export default function CommissionsCachedPage() {
   const [syncMessage, setSyncMessage] = useState('')
   const [isChartsVisible, setIsChartsVisible] = useState(false)
   const [isAdvancedVisible, setIsAdvancedVisible] = useState(false)
+  const [merchantAgg, setMerchantAgg] = useState<any>(null)
+  const [hoveredMerchantKey, setHoveredMerchantKey] = useState<string | null>(null)
+  const [tooltipPosition, setTooltipPosition] = useState<{ top: number; left: number } | null>(null)
+  const tooltipRef = useRef<HTMLDivElement>(null)
 
   // 查询缓存：页数据、总数与总页数（按“筛选条件+pageSize”维度缓存）
   const [pageCache, setPageCache] = useState<Record<string, CommissionSummary>>({})
@@ -162,11 +167,6 @@ export default function CommissionsCachedPage() {
 
   // 手动同步数据
   const handleSync = async () => {
-    if (!beginDate || !endDate) {
-      setError('请先选择日期范围')
-      return
-    }
-
     setSyncing(true)
     setError('')
     setSyncMessage('')
@@ -182,8 +182,6 @@ export default function CommissionsCachedPage() {
         body: JSON.stringify({
           networkIds: selectedNetworkIds.length > 0 ? selectedNetworkIds : undefined,
           accountIds: selectedAccountIds.length > 0 ? selectedAccountIds : undefined,
-          beginDate,
-          endDate,
         }),
       })
 
@@ -206,6 +204,7 @@ export default function CommissionsCachedPage() {
         // 同步后清空缓存，确保查询看到最新数据
         setPageCache({})
         setCountCache({})
+        setMerchantAgg(null)
         // 同步成功后自动查询一次（回到第一页）
         setTimeout(() => {
           handleQuery(1)
@@ -217,6 +216,7 @@ export default function CommissionsCachedPage() {
         // 同步结果不完整也清空缓存，避免展示旧 total/旧页数据
         setPageCache({})
         setCountCache({})
+        setMerchantAgg(null)
 
         const details = [
           ...(apiErrors.length > 0 ? [`API 错误（${apiErrors.length}）：${apiErrors.slice(0, 3).join('；')}${apiErrors.length > 3 ? '…' : ''}`] : []),
@@ -272,6 +272,7 @@ export default function CommissionsCachedPage() {
     try {
       const cachedCount = countCache[countKey]
       const shouldSkipCount = Boolean(cachedCount && Number.isFinite(cachedCount.total))
+      const shouldSkipSummaryAndAgg = targetPage !== 1
 
       const response = await fetch('/api/commissions/cached', {
         method: 'POST',
@@ -292,6 +293,8 @@ export default function CommissionsCachedPage() {
           // paidStatus 已移除
           skipCount: shouldSkipCount ? true : undefined,
           knownTotal: shouldSkipCount ? cachedCount.total : undefined,
+          skipSummary: shouldSkipSummaryAndAgg ? true : undefined,
+          skipMerchantAgg: shouldSkipSummaryAndAgg ? true : undefined,
         }),
       })
 
@@ -322,6 +325,10 @@ export default function CommissionsCachedPage() {
         }))
       }
       setSuccessMessage(`查询成功，共 ${finalResult.total} 条数据`)
+
+      if (!shouldSkipSummaryAndAgg) {
+        setMerchantAgg((finalResult as any).merchantAgg || null)
+      }
 
       // 预取下一页
       if (finalResult.totalPage && targetPage < finalResult.totalPage) {
@@ -362,6 +369,8 @@ export default function CommissionsCachedPage() {
           status: filterStatus !== '全部' ? filterStatus : undefined,
           skipCount: true,
           knownTotal: cachedCount.total,
+          skipSummary: true,
+          skipMerchantAgg: true,
         }),
       })
       if (!resp.ok) return
@@ -409,6 +418,81 @@ export default function CommissionsCachedPage() {
     }, {} as Record<string, number>),
   } : { totalAmount: 0, totalCommission: 0, statusCounts: {} }
 
+  const renderPaginationPages = () => {
+    const totalPages = data?.totalPage || 1
+    const pages: Array<number | '...'> = []
+    const showPages = 5
+
+    if (totalPages <= showPages + 2) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i)
+    } else {
+      if (currentPage <= 3) {
+        for (let i = 1; i <= showPages; i++) pages.push(i)
+        pages.push('...')
+        pages.push(totalPages)
+      } else if (currentPage >= totalPages - 2) {
+        pages.push(1)
+        pages.push('...')
+        for (let i = totalPages - showPages + 1; i <= totalPages; i++) pages.push(i)
+      } else {
+        pages.push(1)
+        pages.push('...')
+        const start = Math.max(2, currentPage - Math.floor(showPages / 2))
+        const end = Math.min(totalPages - 1, start + showPages - 1)
+        for (let i = start; i <= end; i++) pages.push(i)
+        pages.push('...')
+        pages.push(totalPages)
+      }
+    }
+
+    return pages.map((p, idx) => {
+      if (p === '...') {
+        return (
+          <span key={`ellipsis-${idx}`} style={{ padding: '0 6px', color: '#666' }}>
+            ...
+          </span>
+        )
+      }
+      const pageNum = p
+      return (
+        <button
+          key={pageNum}
+          type="button"
+          onClick={() => handlePageChange(pageNum)}
+          style={{
+            padding: '0.5rem 0.85rem',
+            border: '1px solid #ddd',
+            borderRadius: 6,
+            background: currentPage === pageNum ? '#1e66ff' : '#fff',
+            color: currentPage === pageNum ? '#fff' : '#111',
+            cursor: 'pointer',
+            fontWeight: currentPage === pageNum ? 600 : 500,
+            minWidth: 40,
+          }}
+        >
+          {pageNum}
+        </button>
+      )
+    })
+  }
+
+  const getMerchantStatsForTooltip = () => {
+    if (!hoveredMerchantKey || !merchantAgg) return null
+    if (hoveredMerchantKey.startsWith('name:')) {
+      const name = hoveredMerchantKey.slice('name:'.length)
+      const stats = merchantAgg?.byMerchantName?.[name]
+      if (!stats) return { title: name, Pending: 0, Rejected: 0, Approved: 0 }
+      return { title: name, Pending: stats.Pending || 0, Rejected: stats.Rejected || 0, Approved: stats.Approved || 0 }
+    }
+    if (hoveredMerchantKey.startsWith('mcid:')) {
+      const mcid = hoveredMerchantKey.slice('mcid:'.length)
+      const stats = merchantAgg?.byMcid?.[mcid]
+      if (!stats) return { title: mcid, Pending: 0, Rejected: 0, Approved: 0 }
+      return { title: mcid, Pending: stats.Pending || 0, Rejected: stats.Rejected || 0, Approved: stats.Approved || 0 }
+    }
+    return null
+  }
+
   return (
     <div className={styles.container}>
       <h1 className={styles.title}>业绩明细（缓存版本）</h1>
@@ -416,19 +500,18 @@ export default function CommissionsCachedPage() {
       {/* 提示信息 */}
       <div className={styles.notice}>
         <p>⚠️ 本页查询的是数据库缓存的佣金明细，不会实时直连联盟 API。</p>
-        <p>✅ 使用流程：先选择日期范围（可选联盟/账号）→ 点击“同步数据”写入数据库 → 再点击“查询数据”从数据库筛选/分页查看。</p>
-        <p>📌 同步范围策略：如果你勾选了联盟/账号，同步会仅覆盖这些范围的数据；未勾选则按日期范围同步所有活跃账号的数据。</p>
-        <p>⏳ 日期跨度越大，同步耗时越久；建议先用小范围验证（如近7天），确认无误后再扩大范围。</p>
+        <p>✅ 查询日期只用于“查询数据”；“同步数据”固定从 2025-08-01 同步到今天（避免误同步 30 天）。</p>
+        <p>📌 同步范围策略：如果你勾选了联盟/账号，同步会仅覆盖这些范围的数据；未勾选则同步所有活跃账号的数据。</p>
       </div>
 
       {/* 操作按钮 */}
       <div className={styles.actions}>
         <button
           onClick={handleSync}
-          disabled={syncing || !beginDate || !endDate}
+          disabled={syncing}
           className={styles.syncButton}
         >
-          {syncing ? '同步中...' : '同步数据'}
+          {syncing ? '同步中...' : '同步数据（2025-08-01 至今天）'}
         </button>
         <button
           onClick={handleQuery}
@@ -439,7 +522,7 @@ export default function CommissionsCachedPage() {
         </button>
         <button
           type="button"
-          className={styles.pageButton}
+          className={styles.secondaryButton}
           onClick={() => setIsAdvancedVisible(!isAdvancedVisible)}
         >
           {isAdvancedVisible ? '收起高级筛选' : '展开高级筛选'}
@@ -543,17 +626,69 @@ export default function CommissionsCachedPage() {
             <div className={styles.statLabel}>佣金</div>
             <div className={styles.statValue}>${filteredStats.totalCommission.toFixed(2)}</div>
           </div>
-          <div className={styles.statCard}>
-            <div className={styles.statLabel}>Pending</div>
-            <div className={styles.statValue}>{filteredStats.statusCounts.Pending || 0}</div>
+          {(['Pending', 'Rejected', 'Approved'] as const).map(st => (
+            <button
+              key={st}
+              type="button"
+              onClick={() => setFilterStatus(filterStatus === st ? '全部' : st)}
+              style={{
+                border: '1px solid #cfe0ff',
+                background: filterStatus === st ? '#1e66ff' : '#eaf2ff',
+                color: filterStatus === st ? '#fff' : '#1447a6',
+                borderRadius: 10,
+                padding: '0.75rem 1rem',
+                textAlign: 'left',
+                cursor: 'pointer',
+              }}
+              title="点击筛选/取消筛选该状态"
+            >
+              <div style={{ fontSize: 12, opacity: filterStatus === st ? 0.9 : 0.85 }}>{st}</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{filteredStats.statusCounts[st] || 0}</div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 商家汇总（筛选状态后显示：仅展示 mcid，悬浮显示商家总体 Pending/Rejected/Approved 数量） */}
+      {data && filterStatus !== '全部' && merchantAgg?.merchantList?.length > 0 && (
+        <div style={{
+          marginBottom: 16,
+          background: '#fff',
+          border: '1px solid #e0e0e0',
+          borderRadius: 10,
+          padding: '12px 12px 8px',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <span style={{ fontWeight: 700, color: '#111' }}>筛选结果商家汇总（{merchantAgg.merchantList.length} 个）</span>
           </div>
-          <div className={styles.statCard}>
-            <div className={styles.statLabel}>Approved</div>
-            <div className={styles.statValue}>{filteredStats.statusCounts.Approved || 0}</div>
-          </div>
-          <div className={styles.statCard}>
-            <div className={styles.statLabel}>Rejected</div>
-            <div className={styles.statValue}>{filteredStats.statusCounts.Rejected || 0}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {merchantAgg.merchantList.map((m: any) => (
+              <button
+                key={m.mcid}
+                type="button"
+                onMouseEnter={(e: ReactMouseEvent<HTMLButtonElement>) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  setHoveredMerchantKey(`mcid:${m.mcid}`)
+                  setTooltipPosition({ top: rect.bottom + 8, left: rect.left })
+                }}
+                onMouseLeave={() => {
+                  setHoveredMerchantKey(null)
+                  setTooltipPosition(null)
+                }}
+                style={{
+                  border: '1px solid #d7e6ff',
+                  background: '#f4f8ff',
+                  color: '#1447a6',
+                  borderRadius: 999,
+                  padding: '6px 10px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+                title="悬浮查看该商家总体状态数量"
+              >
+                {m.mcid}
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -594,7 +729,7 @@ export default function CommissionsCachedPage() {
           </select>
           <button
             type="button"
-            className={styles.pageButton}
+            className={styles.secondaryButton}
             onClick={() => {
               setFilterMerchantName('')
               setFilterBrandId('')
@@ -634,7 +769,23 @@ export default function CommissionsCachedPage() {
                   <tr key={item.id}>
                     <td>{(item as any).networkName || '-'}</td>
                     <td>{(item as any).accountName || '-'}</td>
-                    <td>{item.merchantName || '-'}</td>
+                    <td
+                      onMouseEnter={(e: ReactMouseEvent<HTMLTableCellElement>) => {
+                        const name = String(item.merchantName || '').trim()
+                        if (!name) return
+                        const rect = (e.currentTarget as HTMLTableCellElement).getBoundingClientRect()
+                        setHoveredMerchantKey(`name:${name}`)
+                        setTooltipPosition({ top: rect.bottom + 8, left: rect.left })
+                      }}
+                      onMouseLeave={() => {
+                        setHoveredMerchantKey(null)
+                        setTooltipPosition(null)
+                      }}
+                      style={{ color: '#1e66ff', textDecoration: 'underline', cursor: 'default' }}
+                      title="悬浮查看该商家总体状态数量"
+                    >
+                      {item.merchantName || '-'}
+                    </td>
                     <td>{item.brandId || '-'}</td>
                     <td>{item.mcid || '-'}</td>
                     <td>${(item.saleAmount || 0).toFixed(2)}</td>
@@ -670,9 +821,9 @@ export default function CommissionsCachedPage() {
               >
                 上一页
               </button>
-              <span>
-                第 {currentPage} / {data.totalPage} 页，共 {data.total} 条
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {renderPaginationPages()}
+              </div>
               <button
                 onClick={() => handlePageChange(currentPage + 1)}
                 disabled={currentPage === data.totalPage}
@@ -685,6 +836,9 @@ export default function CommissionsCachedPage() {
               >
                 末页
               </button>
+              <span style={{ marginLeft: 8, color: '#666' }}>
+                第 {currentPage} / {data.totalPage} 页，共 {data.total} 条
+              </span>
               <select
                 value={pageSize}
                 onChange={(e: ChangeEvent<HTMLSelectElement>) => {
@@ -716,6 +870,56 @@ export default function CommissionsCachedPage() {
         <div className={styles.charts}>
           <CommissionReport data={data.data} isChartsVisible={isChartsVisible} />
         </div>
+      )}
+
+      {/* Tooltip（Portal 渲染到 body） */}
+      {hoveredMerchantKey && tooltipPosition && typeof window !== 'undefined' && createPortal(
+        <div
+          ref={tooltipRef}
+          style={{
+            position: 'fixed',
+            top: `${tooltipPosition.top}px`,
+            left: `${tooltipPosition.left}px`,
+            zIndex: 9999,
+            background: '#fff',
+            border: '1px solid #b9d1ff',
+            boxShadow: '0 12px 30px rgba(0,0,0,0.12)',
+            borderRadius: 12,
+            padding: '14px 16px',
+            minWidth: 240,
+          }}
+          onMouseLeave={() => {
+            setHoveredMerchantKey(null)
+            setTooltipPosition(null)
+          }}
+        >
+          {(() => {
+            const stats = getMerchantStatsForTooltip()
+            if (!stats) return null
+            return (
+              <div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: '#111', marginBottom: 10 }}>
+                  {stats.title}
+                </div>
+                <div style={{ borderTop: '1px solid #eee', paddingTop: 10, display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: '#666' }}>Pending：</span>
+                    <strong>{stats.Pending}笔</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: '#666' }}>Rejected：</span>
+                    <strong>{stats.Rejected}笔</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: '#666' }}>Approved：</span>
+                    <strong>{stats.Approved}笔</strong>
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+        </div>,
+        document.body
       )}
     </div>
   )

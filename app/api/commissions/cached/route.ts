@@ -14,6 +14,8 @@ export async function POST(request: NextRequest) {
     const params: CommissionQueryParams = await request.json()
     const skipCount = Boolean((params as any).skipCount)
     const knownTotal = Number((params as any).knownTotal)
+    const skipSummary = Boolean((params as any).skipSummary)
+    const skipMerchantAgg = Boolean((params as any).skipMerchantAgg)
     const {
       networkIds = [],
       accountIds = [],
@@ -50,6 +52,8 @@ export async function POST(request: NextRequest) {
       status,
       paidStatus,
       skipCount,
+      skipSummary,
+      skipMerchantAgg,
       knownTotal: Number.isFinite(knownTotal) ? knownTotal : undefined,
     })
 
@@ -174,60 +178,105 @@ export async function POST(request: NextRequest) {
     }))
 
     // 15. 计算汇总数据
-    const totalAmount = commissions.reduce((sum, item) => sum + (item.saleAmount || 0), 0)
-    const totalCommission = commissions.reduce((sum, item) => sum + (item.commission || 0), 0)
+    let summary: any = undefined
+    let merchantAgg: any = undefined
 
-    // 按联盟和账号分组统计
-    const summary: any = {
-      totalAmount,
-      totalCommission,
-      networks: {},
-    }
+    if (!skipSummary) {
+      // 汇总必须应用“相同筛选条件”，否则顶部统计会不准
+      let summaryQuery = supabaseServer
+        .from('commissions_cache_view')
+        .select('network_id, network_name, account_id, account_name, sale_amount, commission, status, merchant_name, mcid')
+        .gte('order_time', beginTimestamp)
+        .lte('order_time', endTimestamp)
 
-    // 获取所有数据用于汇总（不分页，需要应用相同的筛选条件）
-    // 注意：这里只获取汇总需要的数据，避免性能问题
-    let summaryQuery = supabaseServer
-      .from('commissions_cache_view')
-      .select('network_id, network_name, account_id, account_name, sale_amount, commission')
-      .gte('order_time', beginTimestamp)
-      .lte('order_time', endTimestamp)
+      if (networkIds && networkIds.length > 0) summaryQuery = summaryQuery.in('network_id', networkIds)
+      if (accountIds && accountIds.length > 0) summaryQuery = summaryQuery.in('account_id', accountIds)
+      if (merchantName) summaryQuery = summaryQuery.ilike('merchant_name', `%${merchantName}%`)
+      if (mcid) summaryQuery = summaryQuery.eq('mcid', mcid)
+      if (brandId) summaryQuery = summaryQuery.eq('brand_id', brandId)
+      if (status && status !== '全部') summaryQuery = summaryQuery.eq('status', status)
+      // paidStatus 已从 UI 移除，这里不再应用 paidStatus 过滤
 
-    if (networkIds && networkIds.length > 0) {
-      summaryQuery = summaryQuery.in('network_id', networkIds)
-    }
-    if (accountIds && accountIds.length > 0) {
-      summaryQuery = summaryQuery.in('account_id', accountIds)
-    }
+      const { data: allData, error: summaryError } = await summaryQuery
+      if (summaryError) throw summaryError
 
-    const { data: allData } = await summaryQuery
+      const totalAmount = (allData || []).reduce((sum: number, item: any) => sum + (Number(item.sale_amount) || 0), 0)
+      const totalCommission = (allData || []).reduce((sum: number, item: any) => sum + (Number(item.commission) || 0), 0)
 
-    if (allData) {
-      allData.forEach((item: any) => {
+      summary = {
+        totalAmount,
+        totalCommission,
+        networks: {},
+        statusCounts: { Pending: 0, Rejected: 0, Approved: 0 },
+      }
+
+      ;(allData || []).forEach((item: any) => {
         const networkId = item.network_id
         const accountId = item.account_id
-
         if (!summary.networks[networkId]) {
-          summary.networks[networkId] = {
-            networkName: item.network_name,
-            amount: 0,
-            commission: 0,
-            accounts: {},
-          }
+          summary.networks[networkId] = { networkName: item.network_name, amount: 0, commission: 0, accounts: {} }
         }
-
         if (!summary.networks[networkId].accounts[accountId]) {
-          summary.networks[networkId].accounts[accountId] = {
-            accountName: item.account_name,
-            amount: 0,
-            commission: 0,
-          }
+          summary.networks[networkId].accounts[accountId] = { accountName: item.account_name, amount: 0, commission: 0 }
         }
-
         summary.networks[networkId].amount += Number(item.sale_amount) || 0
         summary.networks[networkId].commission += Number(item.commission) || 0
         summary.networks[networkId].accounts[accountId].amount += Number(item.sale_amount) || 0
         summary.networks[networkId].accounts[accountId].commission += Number(item.commission) || 0
+
+        const st = item.status
+        if (st === 'Pending' || st === 'Rejected' || st === 'Approved') {
+          summary.statusCounts[st] = (summary.statusCounts[st] || 0) + 1
+        }
       })
+
+      // 商家聚合：用于悬浮提示与“商家汇总”
+      // 为避免翻页反复计算，前端翻页会设置 skipMerchantAgg=true
+      if (!skipMerchantAgg) {
+        // Tooltip 用：仅按时间范围+network/account 做“全量”商家状态计数（不受筛选影响）
+        let baseAggQuery = supabaseServer
+          .from('commissions_cache_view')
+          .select('merchant_name, mcid, status')
+          .gte('order_time', beginTimestamp)
+          .lte('order_time', endTimestamp)
+
+        if (networkIds && networkIds.length > 0) baseAggQuery = baseAggQuery.in('network_id', networkIds)
+        if (accountIds && accountIds.length > 0) baseAggQuery = baseAggQuery.in('account_id', accountIds)
+
+        const { data: baseAggData, error: baseAggError } = await baseAggQuery
+        if (baseAggError) throw baseAggError
+
+        const byMerchantName: Record<string, { Pending: number; Rejected: number; Approved: number; mcid?: string }> = {}
+        const byMcid: Record<string, { Pending: number; Rejected: number; Approved: number; merchantName?: string }> = {}
+
+        ;(baseAggData || []).forEach((row: any) => {
+          const mName = row.merchant_name || 'Unknown'
+          const mMcid = row.mcid || ''
+          const st = row.status
+
+          if (!byMerchantName[mName]) byMerchantName[mName] = { Pending: 0, Rejected: 0, Approved: 0, mcid: mMcid || undefined }
+          if (mMcid && !byMcid[mMcid]) byMcid[mMcid] = { Pending: 0, Rejected: 0, Approved: 0, merchantName: mName }
+
+          if (st === 'Pending' || st === 'Rejected' || st === 'Approved') {
+            byMerchantName[mName][st] = (byMerchantName[mName][st] || 0) + 1
+            if (mMcid) byMcid[mMcid][st] = (byMcid[mMcid][st] || 0) + 1
+          }
+        })
+
+        // 商家汇总用：在“当前筛选结果(allData)”里提取去重 mcid 列表（只在筛选状态时前端展示）
+        const merchantList: Array<{ mcid: string; merchantName?: string }> = []
+        const seen = new Set<string>()
+        ;(allData || []).forEach((row: any) => {
+          const m = String(row.mcid || '').trim()
+          if (!m) return
+          if (seen.has(m)) return
+          seen.add(m)
+          merchantList.push({ mcid: m, merchantName: row.merchant_name || undefined })
+        })
+        merchantList.sort((a, b) => a.mcid.localeCompare(b.mcid))
+
+        merchantAgg = { byMerchantName, byMcid, merchantList }
+      }
     }
 
     return NextResponse.json({
@@ -236,7 +285,8 @@ export async function POST(request: NextRequest) {
       totalPage: totalPages,
       hasNext: curPage < totalPages,
       data: commissions,
-      summary,
+      summary: summary || undefined,
+      merchantAgg: merchantAgg || undefined,
       meta: {
         success: true,
         errors: [],
