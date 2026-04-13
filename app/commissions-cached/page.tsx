@@ -27,6 +27,7 @@ export default function CommissionsCachedPage() {
   const [filterMcid, setFilterMcid] = useState('')
   const [filterBrandId, setFilterBrandId] = useState('')
   const [filterStatus, setFilterStatus] = useState('全部')
+  const [timeSortOrder, setTimeSortOrder] = useState<'asc' | 'desc' | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [pageInputValue, setPageInputValue] = useState('')
@@ -418,6 +419,16 @@ export default function CommissionsCachedPage() {
     }, {} as Record<string, number>),
   } : { totalAmount: 0, totalCommission: 0, statusCounts: {} }
 
+  const visibleRows = data
+    ? [...data.data].sort((a, b) => {
+        const ta = Number(a.orderTime) || 0
+        const tb = Number(b.orderTime) || 0
+        if (timeSortOrder === 'asc') return ta - tb
+        if (timeSortOrder === 'desc') return tb - ta
+        return 0
+      })
+    : []
+
   const renderPaginationPages = () => {
     const totalPages = data?.totalPage || 1
     const pages: Array<number | '...'> = []
@@ -615,136 +626,68 @@ export default function CommissionsCachedPage() {
         </div>
       )}
 
-      {/* 统计数据 */}
       {data && (
-        <div className={styles.stats}>
-          <div className={styles.statCard}>
-            <div className={styles.statLabel}>销售额</div>
-            <div className={styles.statValue}>${filteredStats.totalAmount.toFixed(2)}</div>
-          </div>
-          <div className={styles.statCard}>
-            <div className={styles.statLabel}>佣金</div>
-            <div className={styles.statValue}>${filteredStats.totalCommission.toFixed(2)}</div>
-          </div>
-          {(['Pending', 'Rejected', 'Approved'] as const).map(st => (
-            <button
-              key={st}
-              type="button"
-              onClick={() => setFilterStatus(filterStatus === st ? '全部' : st)}
-              style={{
-                border: '1px solid #cfe0ff',
-                background: filterStatus === st ? '#1e66ff' : '#eaf2ff',
-                color: filterStatus === st ? '#fff' : '#1447a6',
-                borderRadius: 10,
-                padding: '0.75rem 1rem',
-                textAlign: 'left',
-                cursor: 'pointer',
-              }}
-              title="点击筛选/取消筛选该状态"
-            >
-              <div style={{ fontSize: 12, opacity: filterStatus === st ? 0.9 : 0.85 }}>{st}</div>
-              <div style={{ fontSize: 20, fontWeight: 700 }}>{filteredStats.statusCounts[st] || 0}</div>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* 商家汇总（筛选状态后显示：仅展示 mcid，悬浮显示商家总体 Pending/Rejected/Approved 数量） */}
-      {data && filterStatus !== '全部' && merchantAgg?.merchantList?.length > 0 && (
-        <div style={{
-          marginBottom: 16,
-          background: '#fff',
-          border: '1px solid #e0e0e0',
-          borderRadius: 10,
-          padding: '12px 12px 8px',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-            <span style={{ fontWeight: 700, color: '#111' }}>筛选结果商家汇总（{merchantAgg.merchantList.length} 个）</span>
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {merchantAgg.merchantList.map((m: any) => (
-              <button
-                key={m.mcid}
-                type="button"
-                onMouseEnter={(e: ReactMouseEvent<HTMLButtonElement>) => {
-                  const rect = e.currentTarget.getBoundingClientRect()
-                  setHoveredMerchantKey(`mcid:${m.mcid}`)
-                  setTooltipPosition({ top: rect.bottom + 8, left: rect.left })
+        <div className={styles.results}>
+          <div className={styles.dataListHeader}>
+            <div className={styles.dataListTitle}>业绩明细</div>
+            <div className={styles.headerBadges}>
+              <div className={styles.badge}>销售额：<strong>${filteredStats.totalAmount.toFixed(2)}</strong></div>
+              <div className={styles.badge}>佣金：<strong>${filteredStats.totalCommission.toFixed(2)}</strong></div>
+              {(['Pending', 'Rejected', 'Approved'] as const).map(st => (
+                <button
+                  key={st}
+                  type="button"
+                  className={`${styles.badge} ${filterStatus === st ? styles.badgeActive : ''}`}
+                  onClick={() => setFilterStatus(filterStatus === st ? '全部' : st)}
+                >
+                  {st}：<strong>{filteredStats.statusCounts[st] || 0}</strong>
+                </button>
+              ))}
+            </div>
+            <div className={styles.pageSizeSelector}>
+              <label>每页显示：</label>
+              <select
+                value={pageSize}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => {
+                  setPageSize(Number(e.target.value))
+                  setCurrentPage(1)
                 }}
-                onMouseLeave={() => {
-                  setHoveredMerchantKey(null)
-                  setTooltipPosition(null)
-                }}
-                style={{
-                  border: '1px solid #d7e6ff',
-                  background: '#f4f8ff',
-                  color: '#1447a6',
-                  borderRadius: 999,
-                  padding: '6px 10px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-                title="悬浮查看该商家总体状态数量"
               >
-                {m.mcid}
-              </button>
-            ))}
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={200}>200</option>
+              </select>
+            </div>
           </div>
-        </div>
-      )}
 
-      {/* 筛选条件 */}
-      {data && (
-        <div className={styles.tableFilters}>
-          <input
-            type="text"
-            placeholder="筛选商家名称..."
-            value={filterMerchantName}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setFilterMerchantName(e.target.value)}
-            className={styles.filterInput}
-          />
-          <input
-            type="text"
-            placeholder="筛选品牌ID..."
-            value={filterBrandId}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setFilterBrandId(e.target.value)}
-            className={styles.filterInput}
-          />
-          <input
-            type="text"
-            placeholder="筛选MCID..."
-            value={filterMcid}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setFilterMcid(e.target.value)}
-            className={styles.filterInput}
-          />
-          <select
-            value={filterStatus}
-            onChange={(e: ChangeEvent<HTMLSelectElement>) => setFilterStatus(e.target.value)}
-            className={styles.filterSelect}
-          >
-            <option value="全部">全部状态</option>
-            <option value="Pending">Pending</option>
-            <option value="Approved">Approved</option>
-            <option value="Rejected">Rejected</option>
-          </select>
-          <button
-            type="button"
-            className={styles.secondaryButton}
-            onClick={() => {
-              setFilterMerchantName('')
-              setFilterBrandId('')
-              setFilterMcid('')
-              setFilterStatus('全部')
-            }}
-          >
-            清空筛选
-          </button>
-        </div>
-      )}
+          {filterStatus !== '全部' && merchantAgg?.merchantList?.length > 0 && (
+            <div className={styles.merchantSummary}>
+              <div className={styles.merchantSummaryTitle}>筛选结果商家汇总（{merchantAgg.merchantList.length} 个）</div>
+              <div className={styles.merchantChips}>
+                {merchantAgg.merchantList.map((m: any) => (
+                  <button
+                    key={m.mcid}
+                    type="button"
+                    className={styles.merchantChip}
+                    onMouseEnter={(e: ReactMouseEvent<HTMLButtonElement>) => {
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      setHoveredMerchantKey(`mcid:${m.mcid}`)
+                      setTooltipPosition({ top: rect.bottom + 8, left: rect.left })
+                    }}
+                    onMouseLeave={() => {
+                      setHoveredMerchantKey(null)
+                      setTooltipPosition(null)
+                    }}
+                  >
+                    {m.mcid}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
-      {/* 数据表格 */}
-      {data && (
-        <div className={styles.tableContainer}>
+          <div className={styles.tableContainer}>
           <table className={styles.table}>
             <thead>
               <tr>
@@ -756,16 +699,81 @@ export default function CommissionsCachedPage() {
                 <th>销售额</th>
                 <th>佣金</th>
                 <th>状态</th>
-                <th>时间</th>
+                <th>
+                  时间
+                  <div className={styles.timeSort}>
+                    <button type="button" onClick={() => setTimeSortOrder(timeSortOrder === 'asc' ? null : 'asc')}>↑</button>
+                    <button type="button" onClick={() => setTimeSortOrder(timeSortOrder === 'desc' ? null : 'desc')}>↓</button>
+                  </div>
+                </th>
+              </tr>
+              <tr className={styles.filterRow}>
+                <th></th>
+                <th></th>
+                <th>
+                  <input
+                    type="text"
+                    placeholder="筛选..."
+                    value={filterMerchantName}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => setFilterMerchantName(e.target.value)}
+                    className={styles.headerInput}
+                  />
+                </th>
+                <th>
+                  <input
+                    type="text"
+                    placeholder="筛选..."
+                    value={filterBrandId}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => setFilterBrandId(e.target.value)}
+                    className={styles.headerInput}
+                  />
+                </th>
+                <th>
+                  <input
+                    type="text"
+                    placeholder="筛选..."
+                    value={filterMcid}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => setFilterMcid(e.target.value)}
+                    className={styles.headerInput}
+                  />
+                </th>
+                <th></th>
+                <th></th>
+                <th>
+                  <select
+                    value={filterStatus}
+                    onChange={(e: ChangeEvent<HTMLSelectElement>) => setFilterStatus(e.target.value)}
+                    className={styles.headerSelect}
+                  >
+                    <option value="全部">全部</option>
+                    <option value="Pending">Pending</option>
+                    <option value="Approved">Approved</option>
+                    <option value="Rejected">Rejected</option>
+                  </select>
+                </th>
+                <th>
+                  <button
+                    type="button"
+                    className={styles.clearBtn}
+                    onClick={() => {
+                      setFilterMerchantName('')
+                      setFilterBrandId('')
+                      setFilterMcid('')
+                      setFilterStatus('全部')
+                    }}
+                  >
+                    清空
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody>
-              {data.data.length === 0 ? (
+              {visibleRows.length === 0 ? (
                 <tr>
                   <td colSpan={9} className={styles.noData}>没有数据</td>
                 </tr>
               ) : (
-                data.data.map((item: UnifiedCommission) => (
+                visibleRows.map((item: UnifiedCommission) => (
                   <tr key={item.id}>
                     <td>{(item as any).networkName || '-'}</td>
                     <td>{(item as any).accountName || '-'}</td>
@@ -781,7 +789,7 @@ export default function CommissionsCachedPage() {
                         setHoveredMerchantKey(null)
                         setTooltipPosition(null)
                       }}
-                      style={{ color: '#1e66ff', textDecoration: 'underline', cursor: 'default' }}
+                      className={styles.merchantLink}
                       title="悬浮查看该商家总体状态数量"
                     >
                       {item.merchantName || '-'}
@@ -805,8 +813,8 @@ export default function CommissionsCachedPage() {
               )}
             </tbody>
           </table>
+          </div>
 
-          {/* 分页 */}
           {data.totalPage > 1 && (
             <div className={styles.pagination}>
               <button
@@ -821,7 +829,7 @@ export default function CommissionsCachedPage() {
               >
                 上一页
               </button>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div className={styles.pageNumbers}>
                 {renderPaginationPages()}
               </div>
               <button
@@ -836,20 +844,9 @@ export default function CommissionsCachedPage() {
               >
                 末页
               </button>
-              <span style={{ marginLeft: 8, color: '#666' }}>
+              <span className={styles.pageInfoText}>
                 第 {currentPage} / {data.totalPage} 页，共 {data.total} 条
               </span>
-              <select
-                value={pageSize}
-                onChange={(e: ChangeEvent<HTMLSelectElement>) => {
-                  setPageSize(Number(e.target.value))
-                  setCurrentPage(1)
-                }}
-              >
-                <option value={20}>每页 20 条</option>
-                <option value={50}>每页 50 条</option>
-                <option value={100}>每页 100 条</option>
-              </select>
             </div>
           )}
         </div>

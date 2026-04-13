@@ -44,8 +44,12 @@ function generateAuthCookie(): string {
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
   
-  // 允许访问登录页面和登录 API
-  if (pathname === '/login' || pathname.startsWith('/api/auth/')) {
+  // 允许访问登录页面、登录 API、调试 API
+  if (
+    pathname === '/login' ||
+    pathname.startsWith('/api/auth/') ||
+    pathname.startsWith('/api/debug/')
+  ) {
     return NextResponse.next()
   }
   
