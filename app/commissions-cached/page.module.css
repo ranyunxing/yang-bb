@@ -36,7 +36,7 @@
   margin-bottom: 1rem;
 }
 
-.filterGroup label {
+.filterGroup > label {
   display: block;
   font-weight: 500;
   margin-bottom: 0.5rem;
@@ -376,6 +376,118 @@
   margin-top: 2rem;
 }
 
+/* 高级筛选区：对齐首页视觉风格 */
+.filters {
+  background: #fff;
+  border: 1px solid #e4e8ef;
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+.filterGroup {
+  margin-bottom: 0.75rem;
+}
+
+.filterGroup > label {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #1f2937;
+  margin-bottom: 0.65rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.quickActions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.quickActionBtn {
+  border: 1px solid #d3dbee;
+  background: #fff;
+  color: #3d4f70;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.quickActionBtn:hover {
+  border-color: #6f9dff;
+  color: #2d6df6;
+}
+
+.checkboxGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.checkboxLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid #d7e1f1;
+  border-radius: 8px;
+  background: #f8fbff;
+  font-size: 0.85rem;
+  color: #2f3b4a;
+  transition: all 0.2s;
+}
+
+.checkboxLabel:hover {
+  border-color: #7aa8ff;
+  background: #eef5ff;
+}
+
+.checkboxLabel input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #2d6df6;
+}
+
+.dateSection {
+  margin-top: 0.25rem;
+  margin-bottom: 0;
+  background: linear-gradient(135deg, #f8f9fb 0%, #eef2f8 100%);
+  border: 1px solid #e3e8f2;
+  border-radius: 10px;
+  padding: 0.9rem;
+}
+
+.datePresets button {
+  border-radius: 6px;
+  border: 1px solid #d6ddec;
+  background: #fff;
+  color: #334155;
+  font-weight: 500;
+}
+
+.datePresets button.active {
+  background: #2d6df6;
+  border-color: #2d6df6;
+}
+
+.dateInputs {
+  margin-top: 0.4rem;
+}
+
+.dateInputs input[type="date"] {
+  border: 1px solid #cfd7e6;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.advancedActions {
+  margin-top: 0.75rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
 .results {
   margin-top: 1rem;
 }
@@ -409,16 +521,56 @@
   border-radius: 10px;
   padding: 8px 12px;
   font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
 }
 
 button.badge {
   cursor: pointer;
+  box-shadow: 0 1px 2px rgba(30, 102, 255, 0.15);
+}
+
+button.badge:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(30, 102, 255, 0.2);
+}
+
+div.badge {
+  cursor: default;
 }
 
 .badgeActive {
   background: #2d6df6;
   color: #fff;
   border-color: #2d6df6;
+}
+
+.commissionBadgeBtn {
+  position: relative;
+}
+
+.expandTriangle {
+  font-size: 12px;
+  margin-left: 4px;
+  color: inherit;
+}
+
+.commissionBreakdown {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.commissionBreakdown > div {
+  background: #f7f9fc;
+  border: 1px solid #e3e8f3;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: #374151;
 }
 
 .pageSizeSelector {

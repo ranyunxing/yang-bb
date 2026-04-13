@@ -16,6 +16,7 @@ export async function POST(request: NextRequest) {
     const knownTotal = Number((params as any).knownTotal)
     const skipSummary = Boolean((params as any).skipSummary)
     const skipMerchantAgg = Boolean((params as any).skipMerchantAgg)
+    const sortOrder = (params as any).sortOrder === 'asc' ? 'asc' : 'desc'
     const {
       networkIds = [],
       accountIds = [],
@@ -54,6 +55,7 @@ export async function POST(request: NextRequest) {
       skipCount,
       skipSummary,
       skipMerchantAgg,
+      sortOrder,
       knownTotal: Number.isFinite(knownTotal) ? knownTotal : undefined,
     })
 
@@ -113,7 +115,7 @@ export async function POST(request: NextRequest) {
       .select('*')
       .gte('order_time', beginTimestamp)
       .lte('order_time', endTimestamp)
-      .order('order_time', { ascending: false })
+      .order('order_time', { ascending: sortOrder === 'asc' })
 
     // 重新应用所有筛选条件
     if (networkIds && networkIds.length > 0) {
@@ -208,6 +210,7 @@ export async function POST(request: NextRequest) {
         totalCommission,
         networks: {},
         statusCounts: { Pending: 0, Rejected: 0, Approved: 0 },
+        statusCommissions: { Pending: 0, Rejected: 0, Approved: 0 },
       }
 
       ;(allData || []).forEach((item: any) => {
@@ -227,6 +230,7 @@ export async function POST(request: NextRequest) {
         const st = item.status
         if (st === 'Pending' || st === 'Rejected' || st === 'Approved') {
           summary.statusCounts[st] = (summary.statusCounts[st] || 0) + 1
+          summary.statusCommissions[st] = (summary.statusCommissions[st] || 0) + (Number(item.commission) || 0)
         }
       })
 

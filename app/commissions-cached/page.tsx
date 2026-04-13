@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, type MouseEvent as ReactMouseEvent, type ChangeEvent, useRef } from 'react'
-import { createPortal } from 'react-dom'
 import { CommissionSummary, NetworkConfig, NetworkAccount, UnifiedCommission } from '@/types'
 import CommissionReport from '@/components/CommissionReport'
 import CommissionChartToggle from '@/components/CommissionChartToggle'
@@ -19,6 +18,7 @@ export default function CommissionsCachedPage() {
   const [syncing, setSyncing] = useState(false)
   const [loadingNetworks, setLoadingNetworks] = useState(false)
   const [data, setData] = useState<CommissionSummary | null>(null)
+  const [allRows, setAllRows] = useState<UnifiedCommission[]>([])
   const [error, setError] = useState('')
   const [activeDatePreset, setActiveDatePreset] = useState<string>('')
   
@@ -26,8 +26,14 @@ export default function CommissionsCachedPage() {
   const [filterMerchantName, setFilterMerchantName] = useState('')
   const [filterMcid, setFilterMcid] = useState('')
   const [filterBrandId, setFilterBrandId] = useState('')
+  const [debouncedMerchantName, setDebouncedMerchantName] = useState('')
+  const [debouncedMcid, setDebouncedMcid] = useState('')
+  const [debouncedBrandId, setDebouncedBrandId] = useState('')
   const [filterStatus, setFilterStatus] = useState('全部')
+  const [filterNetworkId, setFilterNetworkId] = useState('全部')
+  const [filterAccountId, setFilterAccountId] = useState('全部')
   const [timeSortOrder, setTimeSortOrder] = useState<'asc' | 'desc' | null>(null)
+  const [isCommissionExpanded, setIsCommissionExpanded] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [pageInputValue, setPageInputValue] = useState('')
@@ -42,7 +48,7 @@ export default function CommissionsCachedPage() {
   const [tooltipPosition, setTooltipPosition] = useState<{ top: number; left: number } | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
 
-  // 查询缓存：页数据、总数与总页数（按“筛选条件+pageSize”维度缓存）
+  // 查询缓存（保留兼容，不再用于本地筛选）
   const [pageCache, setPageCache] = useState<Record<string, CommissionSummary>>({})
   const [countCache, setCountCache] = useState<Record<string, { total: number; totalPage: number }>>({})
 
@@ -59,6 +65,7 @@ export default function CommissionsCachedPage() {
       mcid: filterMcid.trim() || undefined,
       brandId: filterBrandId.trim() || undefined,
       status: filterStatus !== '全部' ? filterStatus : undefined,
+      sortOrder: timeSortOrder || 'desc',
       // paidStatus 已移除
       perPage: opts.perPage,
       curPage: opts.page,
@@ -76,6 +83,7 @@ export default function CommissionsCachedPage() {
       mcid: filterMcid.trim() || undefined,
       brandId: filterBrandId.trim() || undefined,
       status: filterStatus !== '全部' ? filterStatus : undefined,
+      sortOrder: timeSortOrder || 'desc',
       perPage,
     }
     return JSON.stringify(normalized)
@@ -206,6 +214,7 @@ export default function CommissionsCachedPage() {
         setPageCache({})
         setCountCache({})
         setMerchantAgg(null)
+        setAllRows([])
         // 同步成功后自动查询一次（回到第一页）
         setTimeout(() => {
           handleQuery(1)
@@ -218,6 +227,7 @@ export default function CommissionsCachedPage() {
         setPageCache({})
         setCountCache({})
         setMerchantAgg(null)
+        setAllRows([])
 
         const details = [
           ...(apiErrors.length > 0 ? [`API 错误（${apiErrors.length}）：${apiErrors.slice(0, 3).join('；')}${apiErrors.length > 3 ? '…' : ''}`] : []),
@@ -238,7 +248,7 @@ export default function CommissionsCachedPage() {
     }
   }
 
-  // 查询数据（从数据库）
+  // 查询数据（从数据库拉取当前范围全量数据，后续前端秒筛选）
   const handleQuery = async (
     arg: number | ReactMouseEvent<HTMLButtonElement> | undefined = undefined
   ) => {
@@ -249,185 +259,161 @@ export default function CommissionsCachedPage() {
       return
     }
 
-    const countKey = buildCountKey(pageSize)
-    const pageKey = buildQueryKey({ page: targetPage, perPage: pageSize })
-
-    // 命中页缓存：秒开
-    const cachedPage = pageCache[pageKey]
-    if (cachedPage) {
-      setData(cachedPage)
-      setSuccessMessage(`查询成功（缓存命中），共 ${cachedPage.total} 条数据`)
-
-      // 预取下一页
-      if (cachedPage.totalPage && targetPage < cachedPage.totalPage) {
-        void prefetchPage(targetPage + 1)
-      }
-      return
-    }
-
     setLoading(true)
     setError('')
     setSuccessMessage('')
     setWarningMessage('')
 
     try {
-      const cachedCount = countCache[countKey]
-      const shouldSkipCount = Boolean(cachedCount && Number.isFinite(cachedCount.total))
-      const shouldSkipSummaryAndAgg = targetPage !== 1
+      const perPageForFetch = 2000
+      let cur = 1
+      let totalPage = 1
+      let all: UnifiedCommission[] = []
+      let firstResult: CommissionSummary | null = null
 
-      const response = await fetch('/api/commissions/cached', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          networkIds: selectedNetworkIds.length > 0 ? selectedNetworkIds : undefined,
-          accountIds: selectedAccountIds.length > 0 ? selectedAccountIds : undefined,
-          beginDate,
-          endDate,
-          curPage: targetPage,
-          perPage: pageSize,
-          merchantName: filterMerchantName || undefined,
-          mcid: filterMcid || undefined,
-          brandId: filterBrandId || undefined,
-          status: filterStatus !== '全部' ? filterStatus : undefined,
-          // paidStatus 已移除
-          skipCount: shouldSkipCount ? true : undefined,
-          knownTotal: shouldSkipCount ? cachedCount.total : undefined,
-          skipSummary: shouldSkipSummaryAndAgg ? true : undefined,
-          skipMerchantAgg: shouldSkipSummaryAndAgg ? true : undefined,
-        }),
-      })
+      while (cur <= totalPage) {
+        const response = await fetch('/api/commissions/cached', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            networkIds: selectedNetworkIds.length > 0 ? selectedNetworkIds : undefined,
+            accountIds: selectedAccountIds.length > 0 ? selectedAccountIds : undefined,
+            beginDate,
+            endDate,
+            curPage: cur,
+            perPage: perPageForFetch,
+            sortOrder: timeSortOrder || 'desc',
+            skipCount: cur > 1 ? true : undefined,
+            knownTotal: firstResult?.total,
+            skipSummary: cur > 1 ? true : undefined,
+            skipMerchantAgg: cur > 1 ? true : undefined,
+          }),
+        })
 
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || '查询失败')
+        if (!response.ok) {
+          const errorData = await response.json()
+          throw new Error(errorData.error || '查询失败')
+        }
+
+        const result = (await response.json()) as CommissionSummary
+        if (cur === 1) {
+          firstResult = result
+          totalPage = result.totalPage || 1
+        }
+        all = all.concat(Array.isArray(result.data) ? result.data : [])
+        cur += 1
       }
 
-      const result = (await response.json()) as CommissionSummary
-      // 兜底排序：避免因为历史数据单位/混合导致显示顺序“看起来很乱”
-      const normalized: CommissionSummary = {
-        ...result,
-        data: Array.isArray(result.data) ? sortByOrderTimeDesc(result.data) : [],
+      const baseTotal = all.length
+      const paged = all.slice((targetPage - 1) * pageSize, (targetPage - 1) * pageSize + pageSize)
+      const base: CommissionSummary = {
+        ...(firstResult || ({} as CommissionSummary)),
+        data: paged,
+        total: baseTotal,
+        totalPage: Math.max(1, Math.ceil(baseTotal / pageSize)),
+        curPage: targetPage,
       }
 
-      // 如果之前跳过了 count，用缓存的 total/totalPage 覆盖，确保 UI 显示一致
-      const finalResult: CommissionSummary =
-        shouldSkipCount && cachedCount
-          ? { ...normalized, total: cachedCount.total, totalPage: cachedCount.totalPage }
-          : normalized
-
-      setData(finalResult)
-      setPageCache((prev: Record<string, CommissionSummary>) => ({ ...prev, [pageKey]: finalResult }))
-      if (!shouldSkipCount) {
-        setCountCache((prev: Record<string, { total: number; totalPage: number }>) => ({
-          ...prev,
-          [countKey]: { total: finalResult.total, totalPage: finalResult.totalPage }
-        }))
-      }
-      setSuccessMessage(`查询成功，共 ${finalResult.total} 条数据`)
-
-      if (!shouldSkipSummaryAndAgg) {
-        setMerchantAgg((finalResult as any).merchantAgg || null)
-      }
-
-      // 预取下一页
-      if (finalResult.totalPage && targetPage < finalResult.totalPage) {
-        void prefetchPage(targetPage + 1)
-      }
+      setAllRows(all)
+      setData(base)
+      setMerchantAgg((firstResult as any)?.merchantAgg || null)
+      setSuccessMessage(`查询成功，共 ${baseTotal} 条数据`)
     } catch (err: any) {
       console.error('查询失败:', err)
       setError(err.message || '查询失败')
       setData(null)
+      setAllRows([])
     } finally {
       setLoading(false)
     }
   }
 
-  const prefetchPage = async (page: number) => {
-    if (!beginDate || !endDate) return
-    const countKey = buildCountKey(pageSize)
-    const cachedCount = countCache[countKey]
-    if (!cachedCount) return
-
-    const pageKey = buildQueryKey({ page, perPage: pageSize })
-    if (pageCache[pageKey]) return
-
-    try {
-      const resp = await fetch('/api/commissions/cached', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          networkIds: selectedNetworkIds.length > 0 ? selectedNetworkIds : undefined,
-          accountIds: selectedAccountIds.length > 0 ? selectedAccountIds : undefined,
-          beginDate,
-          endDate,
-          curPage: page,
-          perPage: pageSize,
-          merchantName: filterMerchantName || undefined,
-          mcid: filterMcid || undefined,
-          brandId: filterBrandId || undefined,
-          status: filterStatus !== '全部' ? filterStatus : undefined,
-          skipCount: true,
-          knownTotal: cachedCount.total,
-          skipSummary: true,
-          skipMerchantAgg: true,
-        }),
-      })
-      if (!resp.ok) return
-      const result = (await resp.json()) as CommissionSummary
-      const normalized: CommissionSummary = {
-        ...result,
-        total: cachedCount.total,
-        totalPage: cachedCount.totalPage,
-        data: Array.isArray(result.data) ? sortByOrderTimeDesc(result.data) : [],
-      }
-      setPageCache((prev: Record<string, CommissionSummary>) => ({ ...prev, [pageKey]: normalized }))
-    } catch {
-      // 静默预取失败
-    }
-  }
-
-  // 筛选条件变化时重新查询
+  // 前端筛选条件变化：本地秒筛选，不再请求后端
   useEffect(() => {
-    if (data && (filterMerchantName || filterMcid || filterBrandId || filterStatus !== '全部')) {
-      // 使用防抖，避免频繁请求
-      const timer = setTimeout(() => {
-        setCurrentPage(1)
-        handleQuery(1)
-      }, 300)
-      return () => clearTimeout(timer)
-    }
-  }, [filterMerchantName, filterMcid, filterBrandId, filterStatus, pageSize])
+    if (!data || allRows.length === 0) return
+    let rows = [...allRows]
+    if (filterNetworkId !== '全部') rows = rows.filter((r: any) => String((r as any).networkId) === filterNetworkId)
+    if (filterAccountId !== '全部') rows = rows.filter((r: any) => String((r as any).accountId) === filterAccountId)
+    if (debouncedMerchantName.trim()) rows = rows.filter((r) => String(r.merchantName || '').toLowerCase().includes(debouncedMerchantName.trim().toLowerCase()))
+    if (debouncedBrandId.trim()) rows = rows.filter((r) => String(r.brandId || '').toLowerCase().includes(debouncedBrandId.trim().toLowerCase()))
+    if (debouncedMcid.trim()) rows = rows.filter((r) => String(r.mcid || '').toLowerCase().includes(debouncedMcid.trim().toLowerCase()))
+    if (filterStatus !== '全部') rows = rows.filter((r) => r.status === filterStatus)
+
+    rows.sort((a, b) => {
+      const ta = Number(a.orderTime) || 0
+      const tb = Number(b.orderTime) || 0
+      return (timeSortOrder || 'desc') === 'asc' ? ta - tb : tb - ta
+    })
+
+    setCurrentPage(1)
+    const total = rows.length
+    const totalPage = Math.max(1, Math.ceil(total / pageSize))
+    const paged = rows.slice(0, pageSize)
+    const statusCounts = rows.reduce((acc: any, r) => {
+      if (r.status === 'Pending' || r.status === 'Rejected' || r.status === 'Approved') acc[r.status] = (acc[r.status] || 0) + 1
+      return acc
+    }, { Pending: 0, Rejected: 0, Approved: 0 })
+    const statusCommissions = rows.reduce((acc: any, r) => {
+      if (r.status === 'Pending' || r.status === 'Rejected' || r.status === 'Approved') acc[r.status] = (acc[r.status] || 0) + (Number(r.commission) || 0)
+      return acc
+    }, { Pending: 0, Rejected: 0, Approved: 0 })
+
+    setData((prev) => prev ? ({
+      ...prev,
+      data: paged,
+      total,
+      totalPage,
+      curPage: 1,
+      summary: {
+        ...(prev.summary || {}),
+        totalAmount: rows.reduce((s, r) => s + (Number(r.saleAmount) || 0), 0),
+        totalCommission: rows.reduce((s, r) => s + (Number(r.commission) || 0), 0),
+        statusCounts,
+        statusCommissions,
+      }
+    }) : prev)
+  }, [filterNetworkId, filterAccountId, debouncedMerchantName, debouncedMcid, debouncedBrandId, filterStatus, pageSize, timeSortOrder, allRows])
+
+  // 文本筛选微防抖：降低大数据量输入卡顿
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedMerchantName(filterMerchantName)
+      setDebouncedBrandId(filterBrandId)
+      setDebouncedMcid(filterMcid)
+    }, 120)
+    return () => clearTimeout(t)
+  }, [filterMerchantName, filterBrandId, filterMcid])
 
   // 分页处理
   const handlePageChange = (newPage: number) => {
-    if (newPage >= 1 && newPage <= (data?.totalPage || 1)) {
-      setCurrentPage(newPage)
-      handleQuery(newPage)
-    }
+    if (!data || newPage < 1 || newPage > (data?.totalPage || 1)) return
+    setCurrentPage(newPage)
+    let rows = [...allRows]
+    if (filterNetworkId !== '全部') rows = rows.filter((r: any) => String((r as any).networkId) === filterNetworkId)
+    if (filterAccountId !== '全部') rows = rows.filter((r: any) => String((r as any).accountId) === filterAccountId)
+    if (debouncedMerchantName.trim()) rows = rows.filter((r) => String(r.merchantName || '').toLowerCase().includes(debouncedMerchantName.trim().toLowerCase()))
+    if (debouncedBrandId.trim()) rows = rows.filter((r) => String(r.brandId || '').toLowerCase().includes(debouncedBrandId.trim().toLowerCase()))
+    if (debouncedMcid.trim()) rows = rows.filter((r) => String(r.mcid || '').toLowerCase().includes(debouncedMcid.trim().toLowerCase()))
+    if (filterStatus !== '全部') rows = rows.filter((r) => r.status === filterStatus)
+    rows.sort((a, b) => {
+      const ta = Number(a.orderTime) || 0
+      const tb = Number(b.orderTime) || 0
+      return (timeSortOrder || 'desc') === 'asc' ? ta - tb : tb - ta
+    })
+    const start = (newPage - 1) * pageSize
+    const paged = rows.slice(start, start + pageSize)
+    setData((prev) => prev ? ({ ...prev, data: paged, curPage: newPage }) : prev)
   }
 
   // 计算筛选后的统计数据
   const filteredStats = data ? {
     totalAmount: data.summary?.totalAmount || 0,
     totalCommission: data.summary?.totalCommission || 0,
-    statusCounts: data.data.reduce((acc: Record<string, number>, item: UnifiedCommission) => {
-      const status = item.status || 'Unknown'
-      acc[status] = (acc[status] || 0) + 1
-      return acc
-    }, {} as Record<string, number>),
-  } : { totalAmount: 0, totalCommission: 0, statusCounts: {} }
+    statusCounts: data.summary?.statusCounts || { Pending: 0, Rejected: 0, Approved: 0 },
+    statusCommissions: data.summary?.statusCommissions || { Pending: 0, Rejected: 0, Approved: 0 },
+  } : { totalAmount: 0, totalCommission: 0, statusCounts: {}, statusCommissions: {} }
 
-  const visibleRows = data
-    ? [...data.data].sort((a, b) => {
-        const ta = Number(a.orderTime) || 0
-        const tb = Number(b.orderTime) || 0
-        if (timeSortOrder === 'asc') return ta - tb
-        if (timeSortOrder === 'desc') return tb - ta
-        return 0
-      })
-    : []
+  const visibleRows = data ? data.data : []
 
   const renderPaginationPages = () => {
     const totalPages = data?.totalPage || 1
@@ -525,13 +511,6 @@ export default function CommissionsCachedPage() {
           {syncing ? '同步中...' : '同步数据（2025-08-01 至今天）'}
         </button>
         <button
-          onClick={handleQuery}
-          disabled={loading || !beginDate || !endDate}
-          className={styles.queryButton}
-        >
-          {loading ? '查询中...' : '查询数据'}
-        </button>
-        <button
           type="button"
           className={styles.secondaryButton}
           onClick={() => setIsAdvancedVisible(!isAdvancedVisible)}
@@ -550,7 +529,25 @@ export default function CommissionsCachedPage() {
       {isAdvancedVisible && (
         <div className={styles.filters}>
           <div className={styles.filterGroup}>
-            <label>联盟：</label>
+            <label>
+              联盟：
+              <span className={styles.quickActions}>
+                <button
+                  type="button"
+                  className={styles.quickActionBtn}
+                  onClick={() => setSelectedNetworkIds(networks.map((n: NetworkConfig) => n.id))}
+                >
+                  全选
+                </button>
+                <button
+                  type="button"
+                  className={styles.quickActionBtn}
+                  onClick={() => setSelectedNetworkIds([])}
+                >
+                  清空
+                </button>
+              </span>
+            </label>
             <div className={styles.checkboxGroup}>
             {networks.map((network: NetworkConfig) => (
                 <label key={network.id} className={styles.checkboxLabel}>
@@ -572,7 +569,25 @@ export default function CommissionsCachedPage() {
           </div>
 
           <div className={styles.filterGroup}>
-            <label>账号：</label>
+            <label>
+              账号：
+              <span className={styles.quickActions}>
+                <button
+                  type="button"
+                  className={styles.quickActionBtn}
+                  onClick={() => setSelectedAccountIds(accounts.map((a: NetworkAccount) => a.id))}
+                >
+                  全选
+                </button>
+                <button
+                  type="button"
+                  className={styles.quickActionBtn}
+                  onClick={() => setSelectedAccountIds([])}
+                >
+                  清空
+                </button>
+              </span>
+            </label>
             <div className={styles.checkboxGroup}>
             {accounts.map((account: NetworkAccount) => (
                 <label key={account.id} className={styles.checkboxLabel}>
@@ -623,6 +638,17 @@ export default function CommissionsCachedPage() {
               </label>
             </div>
           </div>
+
+          <div className={styles.advancedActions}>
+            <button
+              onClick={handleQuery}
+              disabled={loading || !beginDate || !endDate}
+              className={styles.queryButton}
+              type="button"
+            >
+              {loading ? '查询中...' : '查询数据'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -632,18 +658,30 @@ export default function CommissionsCachedPage() {
             <div className={styles.dataListTitle}>业绩明细</div>
             <div className={styles.headerBadges}>
               <div className={styles.badge}>销售额：<strong>${filteredStats.totalAmount.toFixed(2)}</strong></div>
-              <div className={styles.badge}>佣金：<strong>${filteredStats.totalCommission.toFixed(2)}</strong></div>
+              <button
+                type="button"
+                className={`${styles.badge} ${styles.commissionBadgeBtn}`}
+                onClick={() => setIsCommissionExpanded(!isCommissionExpanded)}
+              >
+                佣金：<strong>${filteredStats.totalCommission.toFixed(2)}</strong>
+                <span className={styles.expandTriangle}>{isCommissionExpanded ? '收起' : '展开'}</span>
+              </button>
               {(['Pending', 'Rejected', 'Approved'] as const).map(st => (
-                <button
+                <div
                   key={st}
-                  type="button"
                   className={`${styles.badge} ${filterStatus === st ? styles.badgeActive : ''}`}
-                  onClick={() => setFilterStatus(filterStatus === st ? '全部' : st)}
                 >
                   {st}：<strong>{filteredStats.statusCounts[st] || 0}</strong>
-                </button>
+                </div>
               ))}
             </div>
+            {isCommissionExpanded && (
+              <div className={styles.commissionBreakdown}>
+                <div>Pending佣金：<strong>${Number(filteredStats.statusCommissions?.Pending || 0).toFixed(2)}</strong></div>
+                <div>Rejected佣金：<strong>${Number(filteredStats.statusCommissions?.Rejected || 0).toFixed(2)}</strong></div>
+                <div>Approved佣金：<strong>${Number(filteredStats.statusCommissions?.Approved || 0).toFixed(2)}</strong></div>
+              </div>
+            )}
             <div className={styles.pageSizeSelector}>
               <label>每页显示：</label>
               <select
@@ -702,14 +740,36 @@ export default function CommissionsCachedPage() {
                 <th>
                   时间
                   <div className={styles.timeSort}>
-                    <button type="button" onClick={() => setTimeSortOrder(timeSortOrder === 'asc' ? null : 'asc')}>↑</button>
-                    <button type="button" onClick={() => setTimeSortOrder(timeSortOrder === 'desc' ? null : 'desc')}>↓</button>
+                    <button type="button" onClick={() => { setCurrentPage(1); setTimeSortOrder('asc') }}>↑</button>
+                    <button type="button" onClick={() => { setCurrentPage(1); setTimeSortOrder('desc') }}>↓</button>
                   </div>
                 </th>
               </tr>
               <tr className={styles.filterRow}>
-                <th></th>
-                <th></th>
+                <th>
+                  <select
+                    value={filterNetworkId}
+                    onChange={(e: ChangeEvent<HTMLSelectElement>) => setFilterNetworkId(e.target.value)}
+                    className={styles.headerSelect}
+                  >
+                    <option value="全部">全部</option>
+                    {Array.from(new Map(allRows.map((r: any) => [String((r as any).networkId), String((r as any).networkName || '-')])).entries()).map(([id, name]) => (
+                      <option key={id} value={id}>{name}</option>
+                    ))}
+                  </select>
+                </th>
+                <th>
+                  <select
+                    value={filterAccountId}
+                    onChange={(e: ChangeEvent<HTMLSelectElement>) => setFilterAccountId(e.target.value)}
+                    className={styles.headerSelect}
+                  >
+                    <option value="全部">全部</option>
+                    {Array.from(new Map(allRows.map((r: any) => [String((r as any).accountId), String((r as any).accountName || '-')])).entries()).map(([id, name]) => (
+                      <option key={id} value={id}>{name}</option>
+                    ))}
+                  </select>
+                </th>
                 <th>
                   <input
                     type="text"
@@ -760,6 +820,8 @@ export default function CommissionsCachedPage() {
                       setFilterBrandId('')
                       setFilterMcid('')
                       setFilterStatus('全部')
+                      setFilterNetworkId('全部')
+                      setFilterAccountId('全部')
                     }}
                   >
                     清空
@@ -869,8 +931,8 @@ export default function CommissionsCachedPage() {
         </div>
       )}
 
-      {/* Tooltip（Portal 渲染到 body） */}
-      {hoveredMerchantKey && tooltipPosition && typeof window !== 'undefined' && createPortal(
+      {/* Tooltip */}
+      {hoveredMerchantKey && tooltipPosition && (
         <div
           ref={tooltipRef}
           style={{
@@ -915,8 +977,7 @@ export default function CommissionsCachedPage() {
               </div>
             )
           })()}
-        </div>,
-        document.body
+        </div>
       )}
     </div>
   )
