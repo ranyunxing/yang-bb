@@ -40,11 +40,14 @@ export default function CommissionReport({ data, isChartsVisible: externalVisibi
       if (!item.orderTime || item.orderTime <= 0) return acc
       
       try {
-        const dateObj = new Date(item.orderTime * 1000)
-        // 检查日期是否有效
+        // orderTime 与业绩页一致，为毫秒时间戳（本地展示）
+        const dateObj = new Date(item.orderTime)
         if (isNaN(dateObj.getTime())) return acc
-        
-        const date = dateObj.toISOString().split('T')[0]
+
+        const y = dateObj.getFullYear()
+        const m = String(dateObj.getMonth() + 1).padStart(2, '0')
+        const day = String(dateObj.getDate()).padStart(2, '0')
+        const date = `${y}-${m}-${day}`
         if (!acc[date]) {
           acc[date] = { date, amount: 0, commission: 0, orders: 0 }
         }

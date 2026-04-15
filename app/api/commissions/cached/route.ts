@@ -5,6 +5,66 @@ import type { CommissionQueryParams } from '@/types'
 // 强制动态渲染
 export const dynamic = 'force-dynamic'
 
+type CachedResponse = {
+  expiresAt: number
+  payload: any
+}
+
+const QUERY_CACHE_TTL_MS = 2 * 60 * 1000
+const QUERY_CACHE_MAX_ENTRIES = 500
+const queryCache = new Map<string, CachedResponse>()
+
+function stableValue(value: any): any {
+  if (Array.isArray(value)) {
+    return value.map((v) => stableValue(v))
+  }
+  if (value && typeof value === 'object') {
+    return Object.keys(value)
+      .sort()
+      .reduce<Record<string, any>>((acc, key) => {
+        acc[key] = stableValue(value[key])
+        return acc
+      }, {})
+  }
+  return value
+}
+
+function buildCacheKey(params: CommissionQueryParams & Record<string, any>) {
+  const normalized = {
+    networkIds: [...(params.networkIds || [])].sort(),
+    accountIds: [...(params.accountIds || [])].sort(),
+    beginDate: params.beginDate,
+    endDate: params.endDate,
+    curPage: Number(params.curPage || 1),
+    perPage: Number(params.perPage || 20),
+    merchantName: (params.merchantName || '').trim(),
+    mcid: (params.mcid || '').trim(),
+    brandId: String((params as any).brandId || '').trim(),
+    status: params.status || '',
+    paidStatus: params.paidStatus || '',
+    sortOrder: (params as any).sortOrder === 'asc' ? 'asc' : 'desc',
+    skipCount: Boolean((params as any).skipCount),
+    knownTotal: Number((params as any).knownTotal || 0),
+    skipSummary: Boolean((params as any).skipSummary),
+    skipMerchantAgg: Boolean((params as any).skipMerchantAgg),
+  }
+  return JSON.stringify(stableValue(normalized))
+}
+
+function cleanupCache(now = Date.now()) {
+  for (const [key, entry] of queryCache.entries()) {
+    if (entry.expiresAt <= now) queryCache.delete(key)
+  }
+  if (queryCache.size <= QUERY_CACHE_MAX_ENTRIES) return
+  const overflow = queryCache.size - QUERY_CACHE_MAX_ENTRIES
+  let removed = 0
+  for (const key of queryCache.keys()) {
+    queryCache.delete(key)
+    removed += 1
+    if (removed >= overflow) break
+  }
+}
+
 /**
  * POST /api/commissions/cached
  * 从数据库查询缓存的佣金数据（支持筛选和分页）
@@ -12,6 +72,22 @@ export const dynamic = 'force-dynamic'
 export async function POST(request: NextRequest) {
   try {
     const params: CommissionQueryParams = await request.json()
+    const cacheKey = buildCacheKey(params as CommissionQueryParams & Record<string, any>)
+    const now = Date.now()
+    cleanupCache(now)
+    const cached = queryCache.get(cacheKey)
+    if (cached && cached.expiresAt > now) {
+      return NextResponse.json({
+        ...cached.payload,
+        meta: {
+          ...(cached.payload.meta || {}),
+          success: true,
+          infos: [...(cached.payload.meta?.infos || []), '命中服务端缓存（2分钟 TTL）'],
+          cache: { hit: true, ttlMs: QUERY_CACHE_TTL_MS },
+        },
+      })
+    }
+
     const skipCount = Boolean((params as any).skipCount)
     const knownTotal = Number((params as any).knownTotal)
     const skipSummary = Boolean((params as any).skipSummary)
@@ -286,7 +362,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({
+    const payload = {
       total,
       curPage,
       totalPage: totalPages,
@@ -299,8 +375,16 @@ export async function POST(request: NextRequest) {
         errors: [],
         warnings: [],
         infos: [`从数据库查询到 ${total} 条数据`],
+        cache: { hit: false, ttlMs: QUERY_CACHE_TTL_MS },
       },
+    }
+
+    queryCache.set(cacheKey, {
+      expiresAt: Date.now() + QUERY_CACHE_TTL_MS,
+      payload,
     })
+
+    return NextResponse.json(payload)
   } catch (error: any) {
     console.error('❌ 查询缓存数据失败:', error)
     return NextResponse.json(

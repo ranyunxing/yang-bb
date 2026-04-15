@@ -1,11 +1,15 @@
 'use client'
 
-import { useState, useEffect, type MouseEvent as ReactMouseEvent, type ChangeEvent, useRef } from 'react'
+import { useState, useEffect, useMemo, Fragment, type MouseEvent as ReactMouseEvent, type ChangeEvent, useRef } from 'react'
+import { createPortal } from 'react-dom'
+import dynamic from 'next/dynamic'
 import { CommissionSummary, NetworkConfig, NetworkAccount, UnifiedCommission } from '@/types'
-import CommissionReport from '@/components/CommissionReport'
 import CommissionChartToggle from '@/components/CommissionChartToggle'
 import DebugPanel from '@/components/DebugPanel'
+import { computeOfferDayTotals } from '@/lib/commissions/offerDayTotals'
 import styles from './page.module.css'
+
+const CommissionReport = dynamic(() => import('@/components/CommissionReport'), { ssr: false })
 
 export default function CommissionsCachedPage() {
   const [networks, setNetworks] = useState<NetworkConfig[]>([])
@@ -19,6 +23,9 @@ export default function CommissionsCachedPage() {
   const [loadingNetworks, setLoadingNetworks] = useState(false)
   const [data, setData] = useState<CommissionSummary | null>(null)
   const [allRows, setAllRows] = useState<UnifiedCommission[]>([])
+  const [serverRowsCache, setServerRowsCache] = useState<UnifiedCommission[]>([])
+  const [serverCacheRange, setServerCacheRange] = useState<{ beginDate: string; endDate: string } | null>(null)
+  const [serverCacheScope, setServerCacheScope] = useState<{ networkIds: string[]; accountIds: string[] } | null>(null)
   const [error, setError] = useState('')
   const [activeDatePreset, setActiveDatePreset] = useState<string>('')
   
@@ -42,11 +49,49 @@ export default function CommissionsCachedPage() {
   const [warningMessage, setWarningMessage] = useState('')
   const [syncMessage, setSyncMessage] = useState('')
   const [isChartsVisible, setIsChartsVisible] = useState(false)
-  const [isAdvancedVisible, setIsAdvancedVisible] = useState(false)
+  const [isAdvancedVisible, setIsAdvancedVisible] = useState(true)
   const [merchantAgg, setMerchantAgg] = useState<any>(null)
   const [hoveredMerchantKey, setHoveredMerchantKey] = useState<string | null>(null)
   const [tooltipPosition, setTooltipPosition] = useState<{ top: number; left: number } | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
+  const tooltipHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const queryAbortRef = useRef<AbortController | null>(null)
+  const [portalReady, setPortalReady] = useState(false)
+
+  const cancelTooltipHide = () => {
+    if (tooltipHideTimerRef.current) {
+      clearTimeout(tooltipHideTimerRef.current)
+      tooltipHideTimerRef.current = null
+    }
+  }
+
+  const scheduleTooltipHide = () => {
+    cancelTooltipHide()
+    tooltipHideTimerRef.current = setTimeout(() => {
+      setHoveredMerchantKey(null)
+      setTooltipPosition(null)
+    }, 150)
+  }
+
+  useEffect(() => {
+    setPortalReady(true)
+    return () => {
+      if (tooltipHideTimerRef.current) {
+        clearTimeout(tooltipHideTimerRef.current)
+        tooltipHideTimerRef.current = null
+      }
+      if (queryAbortRef.current) {
+        queryAbortRef.current.abort()
+        queryAbortRef.current = null
+      }
+    }
+  }, [])
+  /** 日汇总展开：锚定行 id + offer 维度 */
+  const [offerInsight, setOfferInsight] = useState<{
+    rowId: string
+    mcid: string
+    brandId: string
+  } | null>(null)
 
   // 查询缓存（保留兼容，不再用于本地筛选）
   const [pageCache, setPageCache] = useState<Record<string, CommissionSummary>>({})
@@ -88,6 +133,12 @@ export default function CommissionsCachedPage() {
     }
     return JSON.stringify(normalized)
   }
+
+  const toDayStartTs = (dateStr: string) => new Date(`${dateStr}T00:00:00`).getTime()
+  const toDayEndTs = (dateStr: string) => new Date(`${dateStr}T23:59:59.999`).getTime()
+  const normalizeIds = (ids: string[]) => [...ids].sort()
+  const isSameIds = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((v, i) => v === b[i])
 
   // 兜底排序：不同联盟/账号数据混在一起时，也能按时间统一倒序展示
   function sortByOrderTimeDesc(rows: UnifiedCommission[]) {
@@ -169,9 +220,13 @@ export default function CommissionsCachedPage() {
       return `${year}-${month}-${day}`
     }
     
-    setBeginDate(formatDate(startDate))
-    setEndDate(formatDate(endDate))
+    const nextBeginDate = formatDate(startDate)
+    const nextEndDate = formatDate(endDate)
+    setBeginDate(nextBeginDate)
+    setEndDate(nextEndDate)
     setActiveDatePreset(preset)
+    // 点击预设按钮时立即应用时间范围，无需再次点击“查询数据”
+    handleQuery(1, { beginDate: nextBeginDate, endDate: nextEndDate })
   }
 
   // 手动同步数据
@@ -215,6 +270,9 @@ export default function CommissionsCachedPage() {
         setCountCache({})
         setMerchantAgg(null)
         setAllRows([])
+        setServerRowsCache([])
+        setServerCacheRange(null)
+        setServerCacheScope(null)
         // 同步成功后自动查询一次（回到第一页）
         setTimeout(() => {
           handleQuery(1)
@@ -228,6 +286,9 @@ export default function CommissionsCachedPage() {
         setCountCache({})
         setMerchantAgg(null)
         setAllRows([])
+        setServerRowsCache([])
+        setServerCacheRange(null)
+        setServerCacheScope(null)
 
         const details = [
           ...(apiErrors.length > 0 ? [`API 错误（${apiErrors.length}）：${apiErrors.slice(0, 3).join('；')}${apiErrors.length > 3 ? '…' : ''}`] : []),
@@ -250,11 +311,14 @@ export default function CommissionsCachedPage() {
 
   // 查询数据（从数据库拉取当前范围全量数据，后续前端秒筛选）
   const handleQuery = async (
-    arg: number | ReactMouseEvent<HTMLButtonElement> | undefined = undefined
+    arg: number | ReactMouseEvent<HTMLButtonElement> | undefined = undefined,
+    dateOverride?: { beginDate: string; endDate: string }
   ) => {
     const targetPage = typeof arg === 'number' ? arg : currentPage
+    const queryBeginDate = dateOverride?.beginDate ?? beginDate
+    const queryEndDate = dateOverride?.endDate ?? endDate
 
-    if (!beginDate || !endDate) {
+    if (!queryBeginDate || !queryEndDate) {
       setError('请选择日期范围')
       return
     }
@@ -263,8 +327,46 @@ export default function CommissionsCachedPage() {
     setError('')
     setSuccessMessage('')
     setWarningMessage('')
+    if (queryAbortRef.current) queryAbortRef.current.abort()
+    const controller = new AbortController()
+    queryAbortRef.current = controller
 
     try {
+      const targetBeginTs = toDayStartTs(queryBeginDate)
+      const targetEndTs = toDayEndTs(queryEndDate)
+      const scopeNetworkIds = normalizeIds(selectedNetworkIds)
+      const scopeAccountIds = normalizeIds(selectedAccountIds)
+
+      const canReuseServerCache =
+        serverCacheRange &&
+        serverCacheScope &&
+        isSameIds(serverCacheScope.networkIds, scopeNetworkIds) &&
+        isSameIds(serverCacheScope.accountIds, scopeAccountIds) &&
+        targetBeginTs >= toDayStartTs(serverCacheRange.beginDate) &&
+        targetEndTs <= toDayEndTs(serverCacheRange.endDate)
+
+      if (canReuseServerCache) {
+        const all = serverRowsCache.filter((r) => {
+          const t = Number(r.orderTime) || 0
+          return t >= targetBeginTs && t <= targetEndTs
+        })
+        const baseTotal = all.length
+        const safePage = 1
+        const paged = all.slice(0, pageSize)
+        setCurrentPage(safePage)
+        setAllRows(all)
+        setData((prev) => ({
+          ...(prev || ({} as CommissionSummary)),
+          data: paged,
+          total: baseTotal,
+          totalPage: Math.max(1, Math.ceil(baseTotal / pageSize)),
+          curPage: safePage,
+        }))
+        setMerchantAgg(null)
+        setSuccessMessage(`查询成功（本地秒筛），共 ${baseTotal} 条数据`)
+        return
+      }
+
       const perPageForFetch = 2000
       let cur = 1
       let totalPage = 1
@@ -275,11 +377,12 @@ export default function CommissionsCachedPage() {
         const response = await fetch('/api/commissions/cached', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({
             networkIds: selectedNetworkIds.length > 0 ? selectedNetworkIds : undefined,
             accountIds: selectedAccountIds.length > 0 ? selectedAccountIds : undefined,
-            beginDate,
-            endDate,
+            beginDate: queryBeginDate,
+            endDate: queryEndDate,
             curPage: cur,
             perPage: perPageForFetch,
             sortOrder: timeSortOrder || 'desc',
@@ -315,15 +418,22 @@ export default function CommissionsCachedPage() {
       }
 
       setAllRows(all)
+      setServerRowsCache(all)
+      setServerCacheRange({ beginDate: queryBeginDate, endDate: queryEndDate })
+      setServerCacheScope({ networkIds: scopeNetworkIds, accountIds: scopeAccountIds })
       setData(base)
       setMerchantAgg((firstResult as any)?.merchantAgg || null)
       setSuccessMessage(`查询成功，共 ${baseTotal} 条数据`)
     } catch (err: any) {
+      if (err?.name === 'AbortError') return
       console.error('查询失败:', err)
       setError(err.message || '查询失败')
       setData(null)
       setAllRows([])
     } finally {
+      if (queryAbortRef.current === controller) {
+        queryAbortRef.current = null
+      }
       setLoading(false)
     }
   }
@@ -384,6 +494,49 @@ export default function CommissionsCachedPage() {
     return () => clearTimeout(t)
   }, [filterMerchantName, filterBrandId, filterMcid])
 
+  // 与表格筛选逻辑一致的全量行（用于 Offer 日汇总，含所有分页）
+  const filteredRows = useMemo(() => {
+    let rows = [...allRows]
+    if (filterNetworkId !== '全部') rows = rows.filter((r: any) => String((r as any).networkId) === filterNetworkId)
+    if (filterAccountId !== '全部') rows = rows.filter((r: any) => String((r as any).accountId) === filterAccountId)
+    if (debouncedMerchantName.trim()) {
+      rows = rows.filter((r) =>
+        String(r.merchantName || '').toLowerCase().includes(debouncedMerchantName.trim().toLowerCase())
+      )
+    }
+    if (debouncedBrandId.trim()) {
+      rows = rows.filter((r) => String(r.brandId || '').toLowerCase().includes(debouncedBrandId.trim().toLowerCase()))
+    }
+    if (debouncedMcid.trim()) {
+      rows = rows.filter((r) => String(r.mcid || '').toLowerCase().includes(debouncedMcid.trim().toLowerCase()))
+    }
+    if (filterStatus !== '全部') rows = rows.filter((r) => r.status === filterStatus)
+    rows.sort((a, b) => {
+      const ta = Number(a.orderTime) || 0
+      const tb = Number(b.orderTime) || 0
+      return (timeSortOrder || 'desc') === 'asc' ? ta - tb : tb - ta
+    })
+    return rows
+  }, [
+    allRows,
+    filterNetworkId,
+    filterAccountId,
+    debouncedMerchantName,
+    debouncedMcid,
+    debouncedBrandId,
+    filterStatus,
+    timeSortOrder,
+  ])
+
+  const offerInsightTotals = useMemo(() => {
+    if (!offerInsight) return null
+    return computeOfferDayTotals(filteredRows, offerInsight.mcid, offerInsight.brandId)
+  }, [filteredRows, offerInsight])
+
+  useEffect(() => {
+    setOfferInsight(null)
+  }, [allRows])
+
   // 分页处理
   const handlePageChange = (newPage: number) => {
     if (!data || newPage < 1 || newPage > (data?.totalPage || 1)) return
@@ -405,13 +558,19 @@ export default function CommissionsCachedPage() {
     setData((prev) => prev ? ({ ...prev, data: paged, curPage: newPage }) : prev)
   }
 
-  // 计算筛选后的统计数据
-  const filteredStats = data ? {
-    totalAmount: data.summary?.totalAmount || 0,
-    totalCommission: data.summary?.totalCommission || 0,
-    statusCounts: data.summary?.statusCounts || { Pending: 0, Rejected: 0, Approved: 0 },
-    statusCommissions: data.summary?.statusCommissions || { Pending: 0, Rejected: 0, Approved: 0 },
-  } : { totalAmount: 0, totalCommission: 0, statusCounts: {}, statusCommissions: {} }
+  // 计算筛选后的统计数据（前端扩展字段见 useEffect 内 setData）
+  const sum = data?.summary as CommissionSummary['summary'] & {
+    statusCounts?: Record<string, number>
+    statusCommissions?: Record<string, number>
+  }
+  const filteredStats = data
+    ? {
+        totalAmount: sum?.totalAmount || 0,
+        totalCommission: sum?.totalCommission || 0,
+        statusCounts: sum?.statusCounts || { Pending: 0, Rejected: 0, Approved: 0 },
+        statusCommissions: sum?.statusCommissions || { Pending: 0, Rejected: 0, Approved: 0 },
+      }
+    : { totalAmount: 0, totalCommission: 0, statusCounts: {}, statusCommissions: {} }
 
   const visibleRows = data ? data.data : []
 
@@ -655,7 +814,10 @@ export default function CommissionsCachedPage() {
       {data && (
         <div className={styles.results}>
           <div className={styles.dataListHeader}>
-            <div className={styles.dataListTitle}>业绩明细</div>
+            <div>
+              <div className={styles.dataListTitle}>业绩明细</div>
+              <p className={styles.dataListHint}>表格较宽时可在下方<strong>左右滑动</strong>，右侧有「日汇总」列，可展开查看该 MCID+品牌 的按日佣金。</p>
+            </div>
             <div className={styles.headerBadges}>
               <div className={styles.badge}>销售额：<strong>${filteredStats.totalAmount.toFixed(2)}</strong></div>
               <button
@@ -709,14 +871,12 @@ export default function CommissionsCachedPage() {
                     type="button"
                     className={styles.merchantChip}
                     onMouseEnter={(e: ReactMouseEvent<HTMLButtonElement>) => {
+                      cancelTooltipHide()
                       const rect = e.currentTarget.getBoundingClientRect()
                       setHoveredMerchantKey(`mcid:${m.mcid}`)
                       setTooltipPosition({ top: rect.bottom + 8, left: rect.left })
                     }}
-                    onMouseLeave={() => {
-                      setHoveredMerchantKey(null)
-                      setTooltipPosition(null)
-                    }}
+                    onMouseLeave={scheduleTooltipHide}
                   >
                     {m.mcid}
                   </button>
@@ -737,6 +897,7 @@ export default function CommissionsCachedPage() {
                 <th>销售额</th>
                 <th>佣金</th>
                 <th>状态</th>
+                <th className={styles.offerInsightCol}>日汇总</th>
                 <th>
                   时间
                   <div className={styles.timeSort}>
@@ -811,6 +972,7 @@ export default function CommissionsCachedPage() {
                     <option value="Rejected">Rejected</option>
                   </select>
                 </th>
+                <th className={styles.offerInsightCol} aria-label="日汇总筛选占位" />
                 <th>
                   <button
                     type="button"
@@ -822,6 +984,7 @@ export default function CommissionsCachedPage() {
                       setFilterStatus('全部')
                       setFilterNetworkId('全部')
                       setFilterAccountId('全部')
+                      setOfferInsight(null)
                     }}
                   >
                     清空
@@ -832,25 +995,24 @@ export default function CommissionsCachedPage() {
             <tbody>
               {visibleRows.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className={styles.noData}>没有数据</td>
+                  <td colSpan={10} className={styles.noData}>没有数据</td>
                 </tr>
               ) : (
-                visibleRows.map((item: UnifiedCommission) => (
-                  <tr key={item.id}>
+                visibleRows.map((item: UnifiedCommission, rowIndex: number) => (
+                  <Fragment key={`${item.id}-${rowIndex}`}>
+                  <tr>
                     <td>{(item as any).networkName || '-'}</td>
                     <td>{(item as any).accountName || '-'}</td>
                     <td
                       onMouseEnter={(e: ReactMouseEvent<HTMLTableCellElement>) => {
+                        cancelTooltipHide()
                         const name = String(item.merchantName || '').trim()
                         if (!name) return
                         const rect = (e.currentTarget as HTMLTableCellElement).getBoundingClientRect()
                         setHoveredMerchantKey(`name:${name}`)
                         setTooltipPosition({ top: rect.bottom + 8, left: rect.left })
                       }}
-                      onMouseLeave={() => {
-                        setHoveredMerchantKey(null)
-                        setTooltipPosition(null)
-                      }}
+                      onMouseLeave={scheduleTooltipHide}
                       className={styles.merchantLink}
                       title="悬浮查看该商家总体状态数量"
                     >
@@ -865,12 +1027,87 @@ export default function CommissionsCachedPage() {
                         {item.status || '-'}
                       </span>
                     </td>
+                    <td className={styles.offerInsightCol}>
+                      <button
+                        type="button"
+                        className={styles.offerInsightBtn}
+                        onClick={() => {
+                          setOfferInsight((prev) => {
+                            if (prev?.rowId === item.id) return null
+                            return {
+                              rowId: item.id,
+                              mcid: String(item.mcid ?? ''),
+                              brandId: String(item.brandId ?? ''),
+                            }
+                          })
+                        }}
+                      >
+                        {offerInsight?.rowId === item.id ? '收起' : '展开'}
+                      </button>
+                    </td>
                     <td>
                       {item.orderTime
                         ? new Date(item.orderTime).toLocaleString('zh-CN')
                         : '-'}
                     </td>
                   </tr>
+                  {offerInsight?.rowId === item.id && offerInsightTotals && (
+                    <tr className={styles.offerInsightRow}>
+                      <td colSpan={10}>
+                        <div className={styles.offerInsightPanel}>
+                          <div className={styles.offerInsightTitle}>
+                            Offer 日汇总（MCID + 品牌ID）
+                            <span className={styles.offerInsightMeta}>
+                              {String(item.mcid || '').trim() || '—'} · {String(item.brandId || '').trim() || '—'}
+                            </span>
+                          </div>
+                          <div className={styles.offerInsightGrid}>
+                            <div className={styles.offerInsightCell}>
+                              <div className={styles.offerInsightDate}>{offerInsightTotals.yesterday.label}</div>
+                              <div className={styles.offerInsightSub}>昨天</div>
+                              <div className={styles.offerInsightAmt}>
+                                ${offerInsightTotals.yesterday.amount.toFixed(2)}
+                              </div>
+                            </div>
+                            <div className={styles.offerInsightCell}>
+                              <div className={styles.offerInsightDate}>{offerInsightTotals.dayBeforeYesterday.label}</div>
+                              <div className={styles.offerInsightSub}>前天</div>
+                              <div className={styles.offerInsightAmt}>
+                                ${offerInsightTotals.dayBeforeYesterday.amount.toFixed(2)}
+                              </div>
+                            </div>
+                            <div className={styles.offerInsightCell}>
+                              <div className={styles.offerInsightDate}>{offerInsightTotals.threeDaysAgo.label}</div>
+                              <div className={styles.offerInsightSub}>大前天</div>
+                              <div className={styles.offerInsightAmt}>
+                                ${offerInsightTotals.threeDaysAgo.amount.toFixed(2)}
+                              </div>
+                            </div>
+                            <div className={styles.offerInsightCell}>
+                              <div className={styles.offerInsightDate}>{offerInsightTotals.fourDaysAgo.label}</div>
+                              <div className={styles.offerInsightSub}>大大前天</div>
+                              <div className={styles.offerInsightAmt}>
+                                ${offerInsightTotals.fourDaysAgo.amount.toFixed(2)}
+                              </div>
+                            </div>
+                            <div className={`${styles.offerInsightCell} ${styles.offerInsightCellWide}`}>
+                              <div className={styles.offerInsightDate}>
+                                近 7 天（{offerInsightTotals.last7.labelRange}）
+                              </div>
+                              <div className={styles.offerInsightSub}>含今天共 7 个自然日</div>
+                              <div className={styles.offerInsightAmt}>
+                                ${offerInsightTotals.last7.amount.toFixed(2)}
+                              </div>
+                            </div>
+                          </div>
+                          <p className={styles.offerInsightFoot}>
+                            按订单时间的本地自然日汇总；单日卡片不包含今天，仅包含当前查询日期范围内、且通过上方筛选的订单。若某日无单则显示 $0.00。
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))
               )}
             </tbody>
@@ -931,31 +1168,33 @@ export default function CommissionsCachedPage() {
         </div>
       )}
 
-      {/* Tooltip */}
-      {hoveredMerchantKey && tooltipPosition && (
-        <div
-          ref={tooltipRef}
-          style={{
-            position: 'fixed',
-            top: `${tooltipPosition.top}px`,
-            left: `${tooltipPosition.left}px`,
-            zIndex: 9999,
-            background: '#fff',
-            border: '1px solid #b9d1ff',
-            boxShadow: '0 12px 30px rgba(0,0,0,0.12)',
-            borderRadius: 12,
-            padding: '14px 16px',
-            minWidth: 240,
-          }}
-          onMouseLeave={() => {
-            setHoveredMerchantKey(null)
-            setTooltipPosition(null)
-          }}
-        >
-          {(() => {
-            const stats = getMerchantStatsForTooltip()
-            if (!stats) return null
-            return (
+      {/* Tooltip：Portal + 延迟收起，避免 React/reconcile 与鼠标路径竞态触发 removeChild */}
+      {portalReady &&
+        hoveredMerchantKey &&
+        tooltipPosition &&
+        typeof document !== 'undefined' &&
+        (() => {
+          const stats = getMerchantStatsForTooltip()
+          if (!stats) return null
+          return createPortal(
+            <div
+              ref={tooltipRef}
+              role="tooltip"
+              style={{
+                position: 'fixed',
+                top: `${tooltipPosition.top}px`,
+                left: `${tooltipPosition.left}px`,
+                zIndex: 9999,
+                background: '#fff',
+                border: '1px solid #b9d1ff',
+                boxShadow: '0 12px 30px rgba(0,0,0,0.12)',
+                borderRadius: 12,
+                padding: '14px 16px',
+                minWidth: 240,
+              }}
+              onMouseEnter={cancelTooltipHide}
+              onMouseLeave={scheduleTooltipHide}
+            >
               <div>
                 <div style={{ fontSize: 22, fontWeight: 800, color: '#111', marginBottom: 10 }}>
                   {stats.title}
@@ -975,10 +1214,10 @@ export default function CommissionsCachedPage() {
                   </div>
                 </div>
               </div>
-            )
-          })()}
-        </div>
-      )}
+            </div>,
+            document.body
+          )
+        })()}
     </div>
   )
 }

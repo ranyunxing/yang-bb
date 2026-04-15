@@ -264,12 +264,15 @@
   background: white;
   border: 1px solid #e0e0e0;
   border-radius: 8px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: visible;
   margin-bottom: 2rem;
+  -webkit-overflow-scrolling: touch;
 }
 
 .table {
   width: 100%;
+  min-width: 1080px;
   border-collapse: collapse;
 }
 
@@ -504,7 +507,20 @@
   font-size: 30px;
   font-weight: 800;
   color: #222;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
+}
+
+.dataListHint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #5c6b82;
+  max-width: 52rem;
+}
+
+.dataListHint strong {
+  font-weight: 600;
+  color: #2d4a7a;
 }
 
 .headerBadges {
@@ -668,5 +684,110 @@ div.badge {
   margin-left: 8px;
   color: #666;
   font-size: 13px;
+}
+
+.offerInsightCol {
+  width: 72px;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.offerInsightBtn {
+  border: 1px solid #c9d8f5;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+  color: #1e4fad;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.offerInsightBtn:hover {
+  border-color: #6f9dff;
+  color: #0d3d9c;
+  box-shadow: 0 1px 4px rgba(30, 102, 255, 0.15);
+}
+
+.offerInsightRow td {
+  padding: 0 !important;
+  border-bottom: 1px solid #d7e4ff;
+  background: linear-gradient(180deg, #f6f9ff 0%, #fff 48%);
+  vertical-align: top;
+}
+
+.offerInsightPanel {
+  padding: 14px 16px 12px;
+}
+
+.offerInsightTitle {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1a2744;
+  margin-bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.offerInsightMeta {
+  font-weight: 500;
+  color: #4a5f85;
+  font-size: 12px;
+}
+
+.offerInsightGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 1200px) {
+  .offerInsightGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.offerInsightCell {
+  border: 1px solid #e2ebfb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  box-shadow: 0 1px 0 rgba(30, 80, 180, 0.04);
+}
+
+.offerInsightCellWide {
+  grid-column: auto;
+}
+
+.offerInsightDate {
+  font-size: 15px;
+  font-weight: 700;
+  color: #111;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.offerInsightSub {
+  font-size: 11px;
+  color: #6b7a96;
+  margin-top: 2px;
+}
+
+.offerInsightAmt {
+  margin-top: 8px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #0d4a2b;
+  font-variant-numeric: tabular-nums;
+}
+
+.offerInsightFoot {
+  margin: 12px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #7a8699;
 }
 
