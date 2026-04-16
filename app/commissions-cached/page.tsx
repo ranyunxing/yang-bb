@@ -6,7 +6,7 @@ import dynamic from 'next/dynamic'
 import { CommissionSummary, NetworkConfig, NetworkAccount, UnifiedCommission } from '@/types'
 import CommissionChartToggle from '@/components/CommissionChartToggle'
 import DebugPanel from '@/components/DebugPanel'
-import { computeOfferDayTotals } from '@/lib/commissions/offerDayTotals'
+import { computeOfferDayTotals, offerCompositeKey } from '@/lib/commissions/offerDayTotals'
 import styles from './page.module.css'
 
 const CommissionReport = dynamic(() => import('@/components/CommissionReport'), { ssr: false })
@@ -50,6 +50,7 @@ export default function CommissionsCachedPage() {
   const [syncMessage, setSyncMessage] = useState('')
   const [isChartsVisible, setIsChartsVisible] = useState(false)
   const [isAdvancedVisible, setIsAdvancedVisible] = useState(true)
+  const [isMerchantSummaryCollapsed, setIsMerchantSummaryCollapsed] = useState(false)
   const [merchantAgg, setMerchantAgg] = useState<any>(null)
   const [hoveredMerchantKey, setHoveredMerchantKey] = useState<string | null>(null)
   const [tooltipPosition, setTooltipPosition] = useState<{ top: number; left: number } | null>(null)
@@ -528,6 +529,74 @@ export default function CommissionsCachedPage() {
     timeSortOrder,
   ])
 
+  // 用于商家悬浮统计：忽略状态筛选，保留其它筛选条件
+  const rowsWithoutStatusFilter = useMemo(() => {
+    let rows = [...allRows]
+    if (filterNetworkId !== '全部') rows = rows.filter((r: any) => String((r as any).networkId) === filterNetworkId)
+    if (filterAccountId !== '全部') rows = rows.filter((r: any) => String((r as any).accountId) === filterAccountId)
+    if (debouncedMerchantName.trim()) {
+      rows = rows.filter((r) =>
+        String(r.merchantName || '').toLowerCase().includes(debouncedMerchantName.trim().toLowerCase())
+      )
+    }
+    if (debouncedBrandId.trim()) {
+      rows = rows.filter((r) => String(r.brandId || '').toLowerCase().includes(debouncedBrandId.trim().toLowerCase()))
+    }
+    if (debouncedMcid.trim()) {
+      rows = rows.filter((r) => String(r.mcid || '').toLowerCase().includes(debouncedMcid.trim().toLowerCase()))
+    }
+    return rows
+  }, [
+    allRows,
+    filterNetworkId,
+    filterAccountId,
+    debouncedMerchantName,
+    debouncedMcid,
+    debouncedBrandId,
+  ])
+
+  const merchantAggView = useMemo(() => {
+    const byMerchantName: Record<string, { Pending: number; Rejected: number; Approved: number }> = {}
+    const byOfferKey: Record<string, { Pending: number; Rejected: number; Approved: number }> = {}
+    const merchantListMap = new Map<string, { mcid: string; brandId: string; merchantName: string }>()
+
+    for (const row of filteredRows) {
+      const mcid = String(row.mcid || '').trim()
+      const brandId = String(row.brandId || '').trim()
+      const merchantName = String(row.merchantName || '').trim()
+      const offerKey = offerCompositeKey(mcid, brandId)
+      if (!mcid && !brandId) continue
+      if (!merchantListMap.has(offerKey)) {
+        merchantListMap.set(offerKey, { mcid, brandId, merchantName })
+      }
+    }
+
+    for (const row of rowsWithoutStatusFilter) {
+      const status = row.status
+      if (status !== 'Pending' && status !== 'Rejected' && status !== 'Approved') continue
+
+      const merchantName = String(row.merchantName || '').trim()
+      const mcid = String(row.mcid || '').trim()
+      const brandId = String(row.brandId || '').trim()
+      const offerKey = offerCompositeKey(mcid, brandId)
+
+      if (merchantName) {
+        if (!byMerchantName[merchantName]) byMerchantName[merchantName] = { Pending: 0, Rejected: 0, Approved: 0 }
+        byMerchantName[merchantName][status] += 1
+      }
+      if (mcid || brandId) {
+        if (!byOfferKey[offerKey]) byOfferKey[offerKey] = { Pending: 0, Rejected: 0, Approved: 0 }
+        byOfferKey[offerKey][status] += 1
+      }
+    }
+
+    return {
+      byMerchantName,
+      byOfferKey,
+      merchantList: Array.from(merchantListMap.values()),
+    }
+  }, [filteredRows, rowsWithoutStatusFilter])
+
   const offerInsightTotals = useMemo(() => {
     if (!offerInsight) return null
     return computeOfferDayTotals(filteredRows, offerInsight.mcid, offerInsight.brandId)
@@ -633,20 +702,68 @@ export default function CommissionsCachedPage() {
   }
 
   const getMerchantStatsForTooltip = () => {
-    if (!hoveredMerchantKey || !merchantAgg) return null
+    if (!hoveredMerchantKey) return null
     if (hoveredMerchantKey.startsWith('name:')) {
       const name = hoveredMerchantKey.slice('name:'.length)
-      const stats = merchantAgg?.byMerchantName?.[name]
+      const stats = merchantAggView.byMerchantName?.[name]
       if (!stats) return { title: name, Pending: 0, Rejected: 0, Approved: 0 }
       return { title: name, Pending: stats.Pending || 0, Rejected: stats.Rejected || 0, Approved: stats.Approved || 0 }
     }
-    if (hoveredMerchantKey.startsWith('mcid:')) {
-      const mcid = hoveredMerchantKey.slice('mcid:'.length)
-      const stats = merchantAgg?.byMcid?.[mcid]
-      if (!stats) return { title: mcid, Pending: 0, Rejected: 0, Approved: 0 }
-      return { title: mcid, Pending: stats.Pending || 0, Rejected: stats.Rejected || 0, Approved: stats.Approved || 0 }
+    if (hoveredMerchantKey.startsWith('offer:')) {
+      const [mcid, brandId] = hoveredMerchantKey.slice('offer:'.length).split('\u0000')
+      const stats = merchantAggView.byOfferKey?.[offerCompositeKey(mcid, brandId)]
+      const title = [mcid, brandId ? `品牌ID ${brandId}` : '品牌ID -'].filter(Boolean).join(' · ')
+      if (!stats) return { title, Pending: 0, Rejected: 0, Approved: 0 }
+      return { title, Pending: stats.Pending || 0, Rejected: stats.Rejected || 0, Approved: stats.Approved || 0 }
     }
     return null
+  }
+
+  const renderOfferInsightPanel = (mcid: string, brandId: string) => {
+    if (!offerInsightTotals) return null
+    return (
+      <div className={styles.offerInsightPanel}>
+        <div className={styles.offerInsightTitle}>
+          Offer 日汇总（MCID + 品牌ID）
+          <span className={styles.offerInsightMeta}>
+            {mcid.trim() || '—'} · {brandId.trim() || '—'}
+          </span>
+        </div>
+        <p className={styles.offerInsightRule}>
+          佣金口径：仅统计 Pending + Approved，Rejected 不计入。
+        </p>
+        <div className={styles.offerInsightGrid}>
+          <div className={styles.offerInsightCell}>
+            <div className={styles.offerInsightDate}>{offerInsightTotals.yesterday.label}</div>
+            <div className={styles.offerInsightSub}>昨天</div>
+            <div className={styles.offerInsightAmt}>${offerInsightTotals.yesterday.amount.toFixed(2)}</div>
+          </div>
+          <div className={styles.offerInsightCell}>
+            <div className={styles.offerInsightDate}>{offerInsightTotals.dayBeforeYesterday.label}</div>
+            <div className={styles.offerInsightSub}>前天</div>
+            <div className={styles.offerInsightAmt}>${offerInsightTotals.dayBeforeYesterday.amount.toFixed(2)}</div>
+          </div>
+          <div className={styles.offerInsightCell}>
+            <div className={styles.offerInsightDate}>{offerInsightTotals.threeDaysAgo.label}</div>
+            <div className={styles.offerInsightSub}>大前天</div>
+            <div className={styles.offerInsightAmt}>${offerInsightTotals.threeDaysAgo.amount.toFixed(2)}</div>
+          </div>
+          <div className={styles.offerInsightCell}>
+            <div className={styles.offerInsightDate}>{offerInsightTotals.fourDaysAgo.label}</div>
+            <div className={styles.offerInsightSub}>大大前天</div>
+            <div className={styles.offerInsightAmt}>${offerInsightTotals.fourDaysAgo.amount.toFixed(2)}</div>
+          </div>
+          <div className={`${styles.offerInsightCell} ${styles.offerInsightCellWide}`}>
+            <div className={styles.offerInsightDate}>近 7 天（{offerInsightTotals.last7.labelRange}）</div>
+            <div className={styles.offerInsightSub}>含今天共 7 个自然日</div>
+            <div className={styles.offerInsightAmt}>${offerInsightTotals.last7.amount.toFixed(2)}</div>
+          </div>
+        </div>
+        <p className={styles.offerInsightFoot}>
+          按订单时间的本地自然日汇总；单日卡片不包含今天，仅包含当前查询日期范围内、且通过上方筛选的订单。若某日无单则显示 $0.00。
+        </p>
+      </div>
+    )
   }
 
   return (
@@ -831,7 +948,7 @@ export default function CommissionsCachedPage() {
               {(['Pending', 'Rejected', 'Approved'] as const).map(st => (
                 <div
                   key={st}
-                  className={`${styles.badge} ${filterStatus === st ? styles.badgeActive : ''}`}
+                  className={`${styles.badge} ${filterStatus === st ? styles.badgeActive : ''} ${filterStatus === st ? styles.statusBadgeActive : ''}`}
                 >
                   {st}：<strong>{filteredStats.statusCounts[st] || 0}</strong>
                 </div>
@@ -861,27 +978,67 @@ export default function CommissionsCachedPage() {
             </div>
           </div>
 
-          {filterStatus !== '全部' && merchantAgg?.merchantList?.length > 0 && (
+          {filterStatus !== '全部' && merchantAggView.merchantList.length > 0 && (
             <div className={styles.merchantSummary}>
-              <div className={styles.merchantSummaryTitle}>筛选结果商家汇总（{merchantAgg.merchantList.length} 个）</div>
-              <div className={styles.merchantChips}>
-                {merchantAgg.merchantList.map((m: any) => (
-                  <button
-                    key={m.mcid}
-                    type="button"
-                    className={styles.merchantChip}
-                    onMouseEnter={(e: ReactMouseEvent<HTMLButtonElement>) => {
-                      cancelTooltipHide()
-                      const rect = e.currentTarget.getBoundingClientRect()
-                      setHoveredMerchantKey(`mcid:${m.mcid}`)
-                      setTooltipPosition({ top: rect.bottom + 8, left: rect.left })
-                    }}
-                    onMouseLeave={scheduleTooltipHide}
-                  >
-                    {m.mcid}
-                  </button>
-                ))}
+              <div className={styles.merchantSummaryHeader}>
+                <div className={styles.merchantSummaryTitle}>筛选结果商家汇总（{merchantAggView.merchantList.length} 个）</div>
+                <button
+                  type="button"
+                  className={styles.merchantSummaryToggle}
+                  onClick={() => setIsMerchantSummaryCollapsed((prev) => !prev)}
+                >
+                  {isMerchantSummaryCollapsed ? '展开汇总' : '折叠汇总'}
+                </button>
               </div>
+              {!isMerchantSummaryCollapsed && (
+                <>
+                  <div className={styles.merchantChips}>
+                    {merchantAggView.merchantList.map((m: any) => (
+                      <div
+                        key={offerCompositeKey(m.mcid, m.brandId)}
+                        className={styles.merchantSummaryItem}
+                      >
+                        <div
+                          className={styles.merchantChip}
+                          onMouseEnter={(e: ReactMouseEvent<HTMLDivElement>) => {
+                            cancelTooltipHide()
+                            const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect()
+                            setHoveredMerchantKey(`offer:${offerCompositeKey(m.mcid, m.brandId)}`)
+                            setTooltipPosition({ top: rect.bottom + 8, left: rect.left })
+                          }}
+                          onMouseLeave={scheduleTooltipHide}
+                        >
+                          <span className={styles.merchantChipMain}>{m.mcid || '—'}</span>
+                          <span className={styles.merchantChipDivider}>|</span>
+                          <span className={styles.merchantChipMeta}>{m.brandId || '—'}</span>
+                          <button
+                            type="button"
+                            className={styles.merchantSummaryExpandBtn}
+                            onMouseEnter={cancelTooltipHide}
+                            onMouseLeave={scheduleTooltipHide}
+                            onClick={() => {
+                              const nextRowId = `summary:${offerCompositeKey(m.mcid, m.brandId)}`
+                              setHoveredMerchantKey(null)
+                              setTooltipPosition(null)
+                              setOfferInsight((prev) => {
+                                if (prev?.rowId === nextRowId) return null
+                                return { rowId: nextRowId, mcid: String(m.mcid ?? ''), brandId: String(m.brandId ?? '') }
+                              })
+                            }}
+                          >
+                            {offerInsight?.rowId === `summary:${offerCompositeKey(m.mcid, m.brandId)}` ? '收起' : '展开'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {offerInsight?.rowId?.startsWith('summary:') && (
+                    <div className={styles.merchantSummaryInsight}>
+                      {renderOfferInsightPanel(offerInsight.mcid, offerInsight.brandId)}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
 
@@ -1007,9 +1164,11 @@ export default function CommissionsCachedPage() {
                       onMouseEnter={(e: ReactMouseEvent<HTMLTableCellElement>) => {
                         cancelTooltipHide()
                         const name = String(item.merchantName || '').trim()
-                        if (!name) return
+                        const mcid = String(item.mcid || '').trim()
+                        const brandId = String(item.brandId || '').trim()
+                        if (!name && !mcid) return
                         const rect = (e.currentTarget as HTMLTableCellElement).getBoundingClientRect()
-                        setHoveredMerchantKey(`name:${name}`)
+                        setHoveredMerchantKey(mcid || brandId ? `offer:${offerCompositeKey(mcid, brandId)}` : `name:${name}`)
                         setTooltipPosition({ top: rect.bottom + 8, left: rect.left })
                       }}
                       onMouseLeave={scheduleTooltipHide}
@@ -1054,56 +1213,7 @@ export default function CommissionsCachedPage() {
                   {offerInsight?.rowId === item.id && offerInsightTotals && (
                     <tr className={styles.offerInsightRow}>
                       <td colSpan={10}>
-                        <div className={styles.offerInsightPanel}>
-                          <div className={styles.offerInsightTitle}>
-                            Offer 日汇总（MCID + 品牌ID）
-                            <span className={styles.offerInsightMeta}>
-                              {String(item.mcid || '').trim() || '—'} · {String(item.brandId || '').trim() || '—'}
-                            </span>
-                          </div>
-                          <div className={styles.offerInsightGrid}>
-                            <div className={styles.offerInsightCell}>
-                              <div className={styles.offerInsightDate}>{offerInsightTotals.yesterday.label}</div>
-                              <div className={styles.offerInsightSub}>昨天</div>
-                              <div className={styles.offerInsightAmt}>
-                                ${offerInsightTotals.yesterday.amount.toFixed(2)}
-                              </div>
-                            </div>
-                            <div className={styles.offerInsightCell}>
-                              <div className={styles.offerInsightDate}>{offerInsightTotals.dayBeforeYesterday.label}</div>
-                              <div className={styles.offerInsightSub}>前天</div>
-                              <div className={styles.offerInsightAmt}>
-                                ${offerInsightTotals.dayBeforeYesterday.amount.toFixed(2)}
-                              </div>
-                            </div>
-                            <div className={styles.offerInsightCell}>
-                              <div className={styles.offerInsightDate}>{offerInsightTotals.threeDaysAgo.label}</div>
-                              <div className={styles.offerInsightSub}>大前天</div>
-                              <div className={styles.offerInsightAmt}>
-                                ${offerInsightTotals.threeDaysAgo.amount.toFixed(2)}
-                              </div>
-                            </div>
-                            <div className={styles.offerInsightCell}>
-                              <div className={styles.offerInsightDate}>{offerInsightTotals.fourDaysAgo.label}</div>
-                              <div className={styles.offerInsightSub}>大大前天</div>
-                              <div className={styles.offerInsightAmt}>
-                                ${offerInsightTotals.fourDaysAgo.amount.toFixed(2)}
-                              </div>
-                            </div>
-                            <div className={`${styles.offerInsightCell} ${styles.offerInsightCellWide}`}>
-                              <div className={styles.offerInsightDate}>
-                                近 7 天（{offerInsightTotals.last7.labelRange}）
-                              </div>
-                              <div className={styles.offerInsightSub}>含今天共 7 个自然日</div>
-                              <div className={styles.offerInsightAmt}>
-                                ${offerInsightTotals.last7.amount.toFixed(2)}
-                              </div>
-                            </div>
-                          </div>
-                          <p className={styles.offerInsightFoot}>
-                            按订单时间的本地自然日汇总；单日卡片不包含今天，仅包含当前查询日期范围内、且通过上方筛选的订单。若某日无单则显示 $0.00。
-                          </p>
-                        </div>
+                        {renderOfferInsightPanel(String(item.mcid || ''), String(item.brandId || ''))}
                       </td>
                     </tr>
                   )}

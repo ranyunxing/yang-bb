@@ -563,6 +563,24 @@ div.badge {
   border-color: #2d6df6;
 }
 
+.statusBadgeActive {
+  background: linear-gradient(135deg, #1d4ed8 0%, #3b82f6 55%, #60a5fa 100%);
+  border-color: #1d4ed8;
+  color: #fff;
+  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.28);
+  transform: translateY(-1px);
+  position: relative;
+  overflow: hidden;
+}
+
+.statusBadgeActive::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, rgba(255,255,255,0.22), rgba(255,255,255,0));
+  pointer-events: none;
+}
+
 .commissionBadgeBtn {
   position: relative;
 }
@@ -614,20 +632,109 @@ div.badge {
   margin-bottom: 8px;
 }
 
+.merchantSummaryHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.merchantSummaryHeader .merchantSummaryTitle {
+  margin-bottom: 0;
+}
+
+.merchantSummaryToggle {
+  border: 1px solid #d8e0ef;
+  background: #fff;
+  color: #38527f;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.16s ease, color 0.16s ease, background-color 0.16s ease;
+}
+
+.merchantSummaryToggle:hover {
+  border-color: #98b5eb;
+  color: #19448e;
+  background: #f7faff;
+}
+
 .merchantChips {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: flex-start;
+}
+
+.merchantSummaryItem {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.merchantChipRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .merchantChip {
   border: 1px solid #d7e6ff;
   background: #f4f8ff;
   color: #1447a6;
-  border-radius: 999px;
-  padding: 6px 10px;
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 6px;
+}
+
+.merchantChipMain {
+  font-weight: 700;
+}
+
+.merchantChipDivider {
+  color: #8ca1ca;
+  font-weight: 600;
+}
+
+.merchantChipMeta {
+  font-size: 13px;
+  color: #5a6f9e;
+  font-weight: 700;
+}
+
+.merchantSummaryExpandBtn {
+  border: 1px solid #d8dfea;
+  background: rgba(255, 255, 255, 0.9);
+  color: #36548d;
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  transition: border-color 0.16s ease, color 0.16s ease, background-color 0.16s ease;
+  margin-left: 2px;
+}
+
+.merchantSummaryExpandBtn:hover {
+  border-color: #9db6e8;
+  color: #173d86;
+  background: #f8fbff;
+}
+
+.merchantSummaryInsight {
+  border: 1px solid #d7e6ff;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fbfdff 0%, #f5f9ff 100%);
+  overflow: hidden;
 }
 
 .filterRow th {
@@ -670,8 +777,28 @@ div.badge {
 }
 
 .merchantLink {
-  color: #1e66ff;
-  text-decoration: underline;
+  color: #27457c;
+  text-decoration: none;
+  cursor: help;
+  font-weight: 600;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #b8c7e6;
+  border-radius: 0;
+  padding: 2px 0 4px;
+  display: inline-block;
+  width: 180px;
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  transition: border-color 0.16s ease, color 0.16s ease;
+}
+
+.merchantLink:hover {
+  color: #123a86;
+  border-color: #6c8fd1;
 }
 
 .pageNumbers {
@@ -733,15 +860,28 @@ div.badge {
 }
 
 .offerInsightMeta {
-  font-weight: 500;
-  color: #4a5f85;
-  font-size: 12px;
+  font-weight: 800;
+  color: #1f4f9e;
+  font-size: 18px;
+  line-height: 1.2;
+  background: #eaf2ff;
+  border: 1px solid #c9dbff;
+  border-radius: 8px;
+  padding: 4px 8px;
 }
 
 .offerInsightGrid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
+}
+
+.offerInsightRule {
+  margin: -2px 0 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #7e2f8e;
+  font-weight: 600;
 }
 
 @media (max-width: 1200px) {

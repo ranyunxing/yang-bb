@@ -53,6 +53,7 @@ export function computeOfferDayTotals(
   const byDay = new Map<string, number>()
   for (const r of rows) {
     if (!match(r)) continue
+    if (r.status !== 'Pending' && r.status !== 'Approved') continue
     const k = localDateKeyFromTimestamp(Number(r.orderTime) || 0)
     if (!k) continue
     byDay.set(k, (byDay.get(k) || 0) + (Number(r.commission) || 0))
